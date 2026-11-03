@@ -102,6 +102,7 @@ async def process_call_audio(session: ActiveCallSession):
             committed_utterances = session.processor.feed(frame)
 
             for utt in committed_utterances:
+                logger.info(f"[{session.call_id}] Speech committed: {utt.duration}s! Transcribing with faster-whisper...")
                 # Transcribe offloaded to thread executor
                 t_vad_stt_start = time.time()
                 transcript: Optional[TranscriptResult] = None

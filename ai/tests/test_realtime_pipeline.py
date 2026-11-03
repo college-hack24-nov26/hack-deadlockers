@@ -105,11 +105,12 @@ async def run_script_through_pipeline(call_id: str, script: list, label: str):
     return scores
 
 async def main():
-    if not settings.llm.gemini_api_key:
-        print("ERROR: GEMINI_API_KEY not set in ai/.env")
+    has_key = bool(settings.llm.gemini_api_key or settings.llm.groq_api_key)
+    if not has_key:
+        print("ERROR: Neither GEMINI_API_KEY nor GROQ_API_KEY is set in ai/.env")
         return
     print(f"Using provider: {settings.llm.provider}")
-    print(f"Gemini key set: {bool(settings.llm.gemini_api_key)}\n")
+    print(f"API key available: {has_key}\n")
 
     await run_script_through_pipeline("scam-test-001", SCAM_SCRIPT, "SCAM - Digital Arrest Flow (EN+HI)")
     await run_script_through_pipeline("benign-test-001", BENIGN_SCRIPT, "BENIGN - Society Call (EN)")

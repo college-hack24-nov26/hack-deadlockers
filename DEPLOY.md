@@ -101,21 +101,22 @@ const wsUrl = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${aiHost}/ws/a
 
 ### Option C — Expose Local Machine via Cloudflare Tunnel (No server cost, uses your PC)
 
-This is the fastest approach for demos/hackathons:
+This is the fastest approach for demos/hackathons and phone testing. Phone browsers require HTTPS before they allow microphone access. Calls across networks also need working TURN credentials. Create credentials with a provider such as Metered, then set these PowerShell variables before starting the services (use the hostname and credentials from your provider):
 
-```cmd
-# Terminal 1: Start both services
-cd hack-deadlockers
+```powershell
+$env:TURN_URLS = 'turn:global.relay.metered.ca:80;turn:global.relay.metered.ca:80?transport=tcp;turn:global.relay.metered.ca:443;turns:global.relay.metered.ca:443?transport=tcp'
+$env:TURN_USERNAME = 'your-turn-username'
+$env:TURN_CREDENTIAL = 'your-turn-credential'
 .\start.bat
-
-# Terminal 2: Tunnel Node.js app (gets HTTPS URL for mobile testing)
-npx cloudflared tunnel --url http://localhost:3000
-
-# Terminal 3: Tunnel FastAPI AI service
-npx cloudflared tunnel --url http://localhost:8000
 ```
 
-You get two free HTTPS URLs. Update `index.html`'s `connectAIWebSocket()` to use the FastAPI tunnel URL.
+The Node server reads the TURN settings through `/api/ice` and proxies AI WebSocket traffic to the local FastAPI service. With both services still running, open another terminal and start one HTTPS tunnel:
+
+```cmd
+npx cloudflared tunnel --url http://localhost:3000
+```
+
+Open the generated HTTPS URL on both devices. Restart the Node server after changing TURN settings. If the call still fails, the app now reports whether either peer gathered a TURN relay candidate.
 
 ---
 
@@ -126,11 +127,5 @@ You get two free HTTPS URLs. Update `index.html`'s `connectAIWebSocket()` to use
 - [ ] `STT_MODEL_SIZE=small` for best accuracy (or `tiny` for faster cold starts)
 - [ ] CORS origins updated in `ai/config.py` to match your deployed Node.js domain
 - [ ] `ai/.env` is in `.gitignore` (never commit API keys!)
-- [ ] Add TURN server for reliable NAT traversal across networks:
-  ```js
-  const ICE = { iceServers: [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' }
-  ]};
-  ```
+- [ ] Set `TURN_URLS`, `TURN_USERNAME`, and `TURN_CREDENTIAL` in the Node.js server environment using credentials from your TURN provider. The app loads these from `/api/ice`; the old shared Open Relay credentials are no longer used.
 

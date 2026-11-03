@@ -26,9 +26,9 @@
   .dot.error{background:#e0393e}
   .dot.connecting{background:#3b82f6}
   .shield-body{margin-top:10px;padding-top:10px;border-top:1px solid #232834}
-  .shield-stats{display:flex;justify-content:space-between;font-size:11px;color:#8a94a6;margin-bottom:8px}
-  .risk-bar-bg{height:8px;background:#232834;border-radius:4px;overflow:hidden;margin:4px 0 8px}
-  .risk-bar-fill{height:100%;width:0%;background:#22a559;transition:width 0.4s ease,background 0.4s ease}
+  .shield-stats{display:flex;justify-content:space-between;align-items:center;font-size:12px;color:#8a94a6;margin-bottom:8px}
+  .risk-bar-bg{height:12px;background:#101319;border:1px solid #232834;border-radius:6px;overflow:hidden;margin:6px 0 10px;box-shadow:inset 0 1px 3px rgba(0,0,0,0.5)}
+  .risk-bar-fill{height:100%;width:0%;background:#22a559;transition:width 0.4s ease,background 0.4s ease;border-radius:5px}
   .chips-container{display:flex;flex-wrap:wrap;gap:4px;margin:6px 0}
   .tactic-chip{font-size:10px;padding:2px 6px;border-radius:6px;background:#2b1a1f;color:#f87171;border:1px solid #7f1d1d}
   .alert-box{padding:8px;border-radius:8px;background:#1a1d24;margin-top:8px;font-size:11px;border-left:3px solid #22a559}
@@ -78,7 +78,7 @@
       <div id="shieldBody" class="shield-body">
         <div class="shield-stats">
           <span>Audio: <b id="shieldBytes">0 KB</b></span>
-          <span>Risk: <b id="shieldRiskText">0 (Low)</b></span>
+          <span>Risk: <b id="shieldRiskText" style="font-size:13px;color:#22a559">0% (Low)</b></span>
         </div>
         <div class="risk-bar-bg">
           <div id="shieldRiskBar" class="risk-bar-fill"></div>
@@ -100,32 +100,47 @@
 
 <script>
 const $ = id => document.getElementById(id);
-const ICE = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }
-  /* Production: add a TURN server here, e.g. { urls:'turn:host:3478', username:'u', credential:'p' } */ ] };
+const DEFAULT_ICE_SERVERS = [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun.relay.metered.ca:80' }
+];
 
-let ws, myId, peerId, pc, localStream, remoteStream, pendingOffer, pendingIce = [], ringTimer, tick, startTs, audioCtx;
+let ws, myId, peerId, pc, localStream, remoteStream, pendingOffer, pendingIce = [], ringTimer, tick, startTs, audioCtx, connectionTimer;
 
 /* ===== AUDIO ACCESS HOOK (future scam detection plugs in here) ===== */
 // Called with 1-second chunks (Blob, webm/opus) of each side of the call.
 function onAudioChunk(who, blob) { /* e.g. upload to your backend over a WebSocket */ }
 function tapStream(stream, who, meterEl) {
-  // 1) Level meter via WebAudio (proves live access to raw audio)
-  audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
-  const src = audioCtx.createMediaStreamSource(stream), an = audioCtx.createAnalyser();
-  an.fftSize = 256; src.connect(an);
-  const buf = new Uint8Array(an.frequencyBinCount);
-  (function loop(){ if(!pc) return; an.getByteTimeDomainData(buf);
-    let max=0; for(const v of buf) max=Math.max(max,Math.abs(v-128)); meterEl.style.width=Math.min(100,max*1.6)+'%'; requestAnimationFrame(loop); })();
-  // 2) Chunked recording for streaming to a server
-  try { const r = new MediaRecorder(stream); r.ondataavailable = e => e.data.size && onAudioChunk(who, e.data);
-        r.start(1000); stream._rec = r; } catch(e) { console.warn('MediaRecorder unavailable', e); }
-  // For raw PCM instead, use an AudioWorklet on `src`.
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') {
+      audioCtx.resume();
+    }
+    const src = audioCtx.createMediaStreamSource(stream);
+    const an = audioCtx.createAnalyser();
+    an.fftSize = 256;
+    src.connect(an);
+    const buf = new Uint8Array(an.frequencyBinCount);
+    (function loop(){
+      if (!pc) return;
+      an.getByteTimeDomainData(buf);
+      let max = 0;
+      for (const v of buf) max = Math.max(max, Math.abs(v - 128));
+      if (meterEl) meterEl.style.width = Math.min(100, max * 1.6) + '%';
+      requestAnimationFrame(loop);
+    })();
+  } catch(e) {
+    console.warn('Audio tap warning:', e);
+  }
 }
 
 /* ===== SIGNALING ===== */
 function send(o){ ws.send(JSON.stringify(o)); }
 function register(){
   myId = $('myId').value.trim(); if(!myId) return;
+  if (!window.isSecureContext && !['localhost', '127.0.0.1', '::1'].includes(location.hostname)) {
+    status('This phone needs the app opened over HTTPS to use its microphone.');
+  }
   ws = new WebSocket((location.protocol==='https:'?'wss':'ws')+'://'+location.host);
   ws.onopen = () => send({type:'register', id:myId});
   ws.onmessage = async e => {
@@ -147,21 +162,85 @@ function flushIce(){ pendingIce.forEach(c=>pc.addIceCandidate(c)); pendingIce=[]
 
 /* ===== CALL FLOW ===== */
 async function makePC(){
+  if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+    throw new Error('secure-context');
+  }
   localStream = await navigator.mediaDevices.getUserMedia({ audio:{ echoCancellation:true, noiseSuppression:true, autoGainControl:true } });
-  pc = new RTCPeerConnection(ICE);
+  pc = new RTCPeerConnection({ iceServers: await loadIceServers() });
   localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
   pc.onicecandidate = e => e.candidate && send({type:'ice', to:peerId, candidate:e.candidate});
-  pc.ontrack = e => { remoteStream = e.streams[0]; $('remoteAudio').srcObject = remoteStream;
-                      tapStream(remoteStream,'remote',$('lvlRemote')); };
+  pc.onicecandidateerror = e => console.warn('[WebRTC] ICE candidate error:', e.errorCode, e.errorText, e.url);
+  pc.ontrack = e => {
+    remoteStream = e.streams[0];
+    $('remoteAudio').srcObject = remoteStream;
+    try { $('remoteAudio').play(); } catch(err) {}
+    tapStream(remoteStream,'remote',$('lvlRemote'));
+    if (pc && pc.connectionState === 'connected') {
+      setupAudioWorklet();
+    }
+  };
   pc.onconnectionstatechange = () => {
-    if (pc.connectionState==='connected'){ onConnected(); }
-    if (['failed','disconnected','closed'].includes(pc.connectionState)) endCall(false);
+    const activePc = pc;
+    if (!activePc) return;
+    console.log('[WebRTC] Connection state:', activePc.connectionState, 'ICE:', activePc.iceConnectionState);
+    if (activePc.connectionState === 'connected') {
+      clearTimeout(connectionTimer);
+      onConnected();
+    } else if (activePc.connectionState === 'disconnected' || activePc.connectionState === 'failed') {
+      const failed = activePc.connectionState === 'failed';
+      status(failed ? 'Network connection failed. Checking…' : 'Network interrupted. Trying to recover…');
+      clearTimeout(connectionTimer);
+      connectionTimer = setTimeout(() => {
+        if (pc !== activePc || activePc.connectionState === 'connected') return;
+        diagnoseIceFailure(activePc).then(message => {
+          if (pc !== activePc) return;
+          status(message);
+          endCall(false);
+        });
+      }, failed ? 4000 : 12000);
+    } else if (activePc.connectionState === 'closed') {
+      endCall(false);
+    }
   };
   tapStream(localStream,'local',$('lvlLocal'));
 }
+async function loadIceServers() {
+  try {
+    const response = await fetch('/api/ice', { cache: 'no-store' });
+    if (!response.ok) throw new Error(`ICE config HTTP ${response.status}`);
+    const config = await response.json();
+    if (!Array.isArray(config.iceServers) || !config.iceServers.length) throw new Error('Empty ICE server list');
+    console.info('[WebRTC] ICE servers loaded:', config.iceServers.map(s => s.urls));
+    return config.iceServers;
+  } catch (error) {
+    console.warn('[WebRTC] Could not load server ICE config; using STUN only:', error);
+    return DEFAULT_ICE_SERVERS;
+  }
+}
+async function diagnoseIceFailure(activePc) {
+  try {
+    const stats = await activePc.getStats();
+    const candidates = [...stats.values()].filter(s => s.type === 'local-candidate' || s.type === 'remote-candidate');
+    const pairs = [...stats.values()].filter(s => s.type === 'candidate-pair' && (s.selected || s.nominated || s.state === 'succeeded'));
+    const types = [...new Set(candidates.map(c => `${c.candidateType}${c.relayProtocol ? '/' + c.relayProtocol : ''}`))];
+    const selected = pairs.map(pair => {
+      const local = stats.get(pair.localCandidateId);
+      const remote = stats.get(pair.remoteCandidateId);
+      return `${local?.candidateType || '?'} ↔ ${remote?.candidateType || '?'}`;
+    });
+    console.error('[WebRTC] ICE diagnostics:', { iceState: activePc.iceConnectionState, candidates: types, selectedPairs: selected });
+    if (!candidates.some(c => c.candidateType === 'relay')) {
+      return 'No TURN relay was found. Add working TURN credentials, then restart the server and retry.';
+    }
+    return 'A TURN relay was found, but the network blocked the media route. Try both devices on the same Wi-Fi or a different network.';
+  } catch (error) {
+    console.error('[WebRTC] Could not collect ICE diagnostics:', error);
+    return 'Call could not connect. Check the HTTPS link, TURN settings, and both devices’ networks.';
+  }
+}
 async function startCall(){
   peerId = $('toId').value.trim(); if(!peerId||peerId===myId) return;
-  showCall('Calling…'); try { await makePC(); } catch(e){ status('Mic permission needed'); return endCall(false); }
+  showCall('Calling…'); try { await makePC(); } catch(e){ status(mediaAccessError(e)); return endCall(false); }
   const offer = await pc.createOffer(); await pc.setLocalDescription(offer);
   send({type:'offer', to:peerId, sdp:pc.localDescription});
   ringTimer = setTimeout(()=>{ status('No answer'); endCall(true); }, 45000);
@@ -169,13 +248,13 @@ async function startCall(){
 function showIncoming(){ showCall('Incoming call…'); $('acceptBtn').classList.remove('hidden'); }
 async function acceptCall(){
   $('acceptBtn').classList.add('hidden'); status('Connecting…');
-  try { await makePC(); } catch(e){ status('Mic permission needed'); return endCall(true); }
+  try { await makePC(); } catch(e){ status(mediaAccessError(e)); return endCall(true); }
   await pc.setRemoteDescription(pendingOffer.sdp); flushIce(); pendingOffer=null;
   const ans = await pc.createAnswer(); await pc.setLocalDescription(ans);
   send({type:'answer', to:peerId, sdp:pc.localDescription});
 }
 function onConnected(){
-  status(''); startTs=Date.now(); $('muteBtn').classList.remove('hidden'); $('meters').classList.remove('hidden');
+  status(''); startTs=Date.now(); clearInterval(tick); $('muteBtn').classList.remove('hidden'); $('meters').classList.remove('hidden');
   tick=setInterval(()=>{ const s=Math.floor((Date.now()-startTs)/1000);
     $('timer').textContent=String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0'); },1000);
   startAIAnalysis();
@@ -184,13 +263,27 @@ function toggleMute(){ const t=localStream.getAudioTracks()[0]; t.enabled=!t.ena
   $('muteBtn').classList.toggle('on',!t.enabled); $('muteBtn').textContent=t.enabled?'🎤':'🔇'; }
 function endCall(notify){
   if (notify && peerId){ send({type: pendingOffer?'reject':'hangup', to:peerId}); }
-  clearTimeout(ringTimer); clearInterval(tick);
+  clearTimeout(ringTimer); clearTimeout(connectionTimer); clearInterval(tick);
   stopAIAnalysis();
   [localStream, remoteStream].forEach(s => { if(s){ s._rec && s._rec.state!=='inactive' && s._rec.stop(); s.getTracks().forEach(t=>t.stop()); }});
   pc && pc.close(); pc=localStream=remoteStream=pendingOffer=null; pendingIce=[]; peerId=null;
   $('timer').textContent=''; $('muteBtn').classList.add('hidden'); $('acceptBtn').classList.add('hidden'); $('meters').classList.add('hidden');
   $('muteBtn').classList.remove('on'); $('muteBtn').textContent='🎤';
   show('dialView');
+}
+
+function mediaAccessError(error) {
+  if (error?.message === 'secure-context' || !window.isSecureContext) {
+    return 'Microphone access needs HTTPS on this device. Open the app using its HTTPS link.';
+  }
+  if (error?.name === 'NotAllowedError' || error?.name === 'SecurityError') {
+    return 'Microphone permission was denied. Allow microphone access in browser settings and try again.';
+  }
+  if (error?.name === 'NotFoundError' || error?.name === 'DevicesNotFoundError') {
+    return 'No microphone was found on this device.';
+  }
+  console.error('[WebRTC] Microphone setup failed:', error);
+  return 'Could not start the microphone. Check browser permission and try again.';
 }
 
 /* ===== AI SCAM SHIELD INTEGRATION ===== */
@@ -267,25 +360,40 @@ function scheduleAIRetry() {
   }, aiReconnectDelay);
 }
 
+let aiRemoteSource = null, aiLocalSource = null, aiSilentSink = null;
+
 async function setupAudioWorklet() {
-  if (!remoteStream) return;
   try {
     audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
     if (audioCtx.state === 'suspended') {
       await audioCtx.resume();
     }
     await audioCtx.audioWorklet.addModule('pcm-worklet.js');
-    if (!aiAudioSource) {
-      aiAudioSource = audioCtx.createMediaStreamSource(remoteStream);
-    }
+
     if (!aiWorkletNode) {
       aiWorkletNode = new AudioWorkletNode(audioCtx, 'pcm-worklet-processor');
       aiWorkletNode.port.onmessage = e => {
         if (aiWs && aiWs.readyState === WebSocket.OPEN) {
-          aiWs.send(e.data); // binary 250ms Int16 PCM frame (caller only)
+          aiWs.send(e.data); // binary 250ms Int16 PCM frame
         }
       };
-      aiAudioSource.connect(aiWorkletNode);
+      // Keep Web Audio clock active on mobile browsers (Android Chrome)
+      aiSilentSink = audioCtx.createGain();
+      aiSilentSink.gain.value = 0.0;
+      aiWorkletNode.connect(aiSilentSink);
+      aiSilentSink.connect(audioCtx.destination);
+    }
+
+    // Connect remote caller voice
+    if (remoteStream && !aiRemoteSource) {
+      aiRemoteSource = audioCtx.createMediaStreamSource(remoteStream);
+      aiRemoteSource.connect(aiWorkletNode);
+    }
+
+    // Also connect local mic so whenever either party speaks, the AI analyzes speech in real time
+    if (localStream && !aiLocalSource) {
+      aiLocalSource = audioCtx.createMediaStreamSource(localStream);
+      aiLocalSource.connect(aiWorkletNode);
     }
   } catch (err) {
     console.warn('AudioWorklet setup error:', err);
@@ -355,6 +463,26 @@ function highlightEvidenceInTranscript(evidence) {
   });
 }
 
+function renderRisk(r) {
+  const score = Math.round(r.score || 0);
+  const bar = $('shieldRiskBar');
+  const txt = $('shieldRiskText');
+  if (bar) bar.style.width = score + '%';
+  if (txt) txt.textContent = `${score}% (${r.level || 'Low'})`;
+
+  let color = '#22a559';
+  if (score > 80) {
+    color = '#dc2626';
+  } else if (score > 60) {
+    color = '#ea580c';
+  } else if (score > 30) {
+    color = '#f59e0b';
+  }
+
+  if (bar) bar.style.background = color;
+  if (txt) txt.style.color = color;
+}
+
 function renderAlert(a) {
   const box = $('shieldAlert');
   box.className = 'alert-box ' + (a.level ? a.level.toLowerCase() : '');
@@ -404,9 +532,17 @@ function stopAIAnalysis() {
     try { aiWorkletNode.disconnect(); } catch(e) {}
     aiWorkletNode = null;
   }
-  if (aiAudioSource) {
-    try { aiAudioSource.disconnect(); } catch(e) {}
-    aiAudioSource = null;
+  if (aiRemoteSource) {
+    try { aiRemoteSource.disconnect(); } catch(e) {}
+    aiRemoteSource = null;
+  }
+  if (aiLocalSource) {
+    try { aiLocalSource.disconnect(); } catch(e) {}
+    aiLocalSource = null;
+  }
+  if (aiSilentSink) {
+    try { aiSilentSink.disconnect(); } catch(e) {}
+    aiSilentSink = null;
   }
   callId = null;
   $('shieldPanel').classList.add('hidden');

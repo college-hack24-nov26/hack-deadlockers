@@ -52,8 +52,16 @@ class RiskEngine:
         seen_pressure = False
         seen_sensitive_after_pressure = False
 
+        latest_event_t = max((ev.t for ev in events if ev.t > 0), default=0.0)
+        is_relative_t = (latest_event_t < 100000)
+
         for e in events:
-            age = max(0.0, now - e.t) if e.t > 0 else 0.0
+            if is_relative_t:
+                ref_time = current_time if (current_time is not None and current_time < 100000) else latest_event_t
+                age = max(0.0, ref_time - e.t)
+            else:
+                age = max(0.0, now - e.t) if e.t > 0 else 0.0
+
             decay_factor = math.pow(0.5, age / half_life)
             effective_conf = e.confidence * decay_factor
 

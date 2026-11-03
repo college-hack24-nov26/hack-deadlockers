@@ -43,10 +43,13 @@ class SileroVAD:
     def reset(self):
         self.state = np.zeros((2, 1, 128), dtype=np.float32)
 
-    def is_speech(self, chunk: np.ndarray, threshold: float = 0.5) -> bool:
+    def is_speech(self, chunk: np.ndarray, threshold: float = 0.30) -> bool:
         """Run VAD on 512 float32 samples at 16kHz."""
         if len(chunk) != 512:
             return False
+
+        rms = float(np.sqrt(np.mean(chunk**2)))
+        prob = 0.0
 
         if self.session is not None:
             try:
@@ -58,13 +61,13 @@ class SileroVAD:
                 })
                 prob = float(outputs[0][0][0])
                 self.state = outputs[1]
-                return prob >= threshold
             except Exception as e:
                 logger.debug(f"ONNX VAD error: {e}")
 
-        # Energy-based fallback
-        rms = np.sqrt(np.mean(chunk**2))
-        return rms > 0.015
+        # Combined neural VAD + acoustic energy:
+        # Detected as speech if neural probability >= threshold OR if RMS indicates clear voice activity
+        is_speech = (prob >= threshold) or (rms >= 0.02)
+        return is_speech
 
 class AudioStreamProcessor:
     """

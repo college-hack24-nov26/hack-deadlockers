@@ -129,7 +129,10 @@ Analyze the latest utterance for the 10 scam tactics. Respond strictly with JSON
             try:
                 if self.provider == "gemini_free" and settings.llm.gemini_api_key:
                     raw_json_str = await self._call_gemini(user_content)
-                elif self.provider == "groq_free" and settings.llm.groq_api_key:
+                    if not raw_json_str and settings.llm.groq_api_key:
+                        logger.info("Falling back to Groq...")
+                        raw_json_str = await self._call_groq(user_content)
+                elif (self.provider == "groq_free" or settings.llm.groq_api_key) and settings.llm.groq_api_key:
                     raw_json_str = await self._call_groq(user_content)
                 else:
                     raw_json_str = await self._call_ollama(user_content)

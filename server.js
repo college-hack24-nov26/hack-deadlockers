@@ -1,10 +1,27 @@
 // Signaling server: relays signaling between peers and proxies AI analysis to Python service
 const express = require('express');
 const http = require('http');
+const os = require('os');
 const { WebSocket, WebSocketServer } = require('ws');
 
 const app = express();
 app.use(express.static(require('path').join(__dirname, 'public')));
+app.get('/api/ice', (_req, res) => {
+  const iceServers = [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun.relay.metered.ca:80' }
+  ];
+  const turnUrls = (process.env.TURN_URLS || '').split(';').map(url => url.trim()).filter(Boolean);
+  const turnConfigured = turnUrls.length > 0 && Boolean(process.env.TURN_USERNAME) && Boolean(process.env.TURN_CREDENTIAL);
+  if (turnConfigured) {
+    iceServers.push({
+      urls: turnUrls,
+      username: process.env.TURN_USERNAME,
+      credential: process.env.TURN_CREDENTIAL
+    });
+  }
+  res.set('Cache-Control', 'no-store').json({ iceServers });
+});
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 const peers = new Map(); // id -> ws
@@ -82,4 +99,19 @@ wss.on('connection', (ws, req) => {
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log('Running on http://localhost:' + PORT));
+server.listen(PORT, '0.0.0.0', () => {
+  console.log('Running on http://localhost:' + PORT);
+  for (const addresses of Object.values(os.networkInterfaces())) {
+    for (const address of addresses || []) {
+      if (address.family === 'IPv4' && !address.internal) {
+        console.log(`LAN address: http://${address.address}:${PORT}`);
+      }
+    }
+  }
+  console.log('Mobile browsers require HTTPS for microphone access; use an HTTPS tunnel for phone calls.');
+  console.log(turnUrlsConfigured() ? 'Custom TURN relay configured.' : 'No TURN relay configured; calls may fail across restrictive networks.');
+});
+
+function turnUrlsConfigured() {
+  return Boolean(process.env.TURN_URLS && process.env.TURN_USERNAME && process.env.TURN_CREDENTIAL);
+}
