@@ -19,7 +19,7 @@ Caller Voice (remoteStream only)
   Speech-To-Text & Language Detection (MR / HI / EN / Hinglish)
        │
        ▼ [N=6 Conversation Context + Pre-gating]
-  Tactic Classifier (Ollama qwen2.5:7b-instruct / qwen2.5:3b-instruct)
+  Tactic Classifier (Groq API, configured with GROQ_API_KEY)
        │
        ▼ [Stage 0 to Stage 4 Subsequence Matching]
   Sequence Analyzer (Digital Arrest / OTP / Remote Access Flows)
@@ -38,20 +38,9 @@ Caller Voice (remoteStream only)
 ### Prerequisites
 - Node.js 18+ (for WebRTC signaling)
 - Python 3.10+ (Python 3.12 recommended)
-- [Ollama](https://ollama.com/) (Free, local LLM runner)
+- A Groq API key for tactic classification
 
-### Step 1: Install & Pull Ollama Model
-1. Download and install Ollama from [ollama.com](https://ollama.com).
-2. Open a terminal and pull the local Qwen 2.5 instruction model:
-   ```cmd
-   ollama pull qwen2.5:7b-instruct
-   ```
-   *(For low-spec or CPU-only laptops with <8 GB RAM, use the smaller model:)*
-   ```cmd
-   ollama pull qwen2.5:3b-instruct
-   ```
-
-### Step 2: Set Up Python Virtual Environment
+### Set Up Python Virtual Environment
 Navigate to `hack-deadlockers/ai` and set up the environment:
 
 ```cmd
@@ -67,7 +56,7 @@ pip install -r requirements.txt
 
 ## 2. Configuration (`.env`)
 
-Copy `ai/.env.example` to `ai/.env`:
+Keep the existing `ai/.env` if it already contains your key. Otherwise copy `ai/.env.example` to `ai/.env`, then configure:
 
 ```ini
 # STT Configuration: tiny, base, small, medium, large-v3-turbo
@@ -75,18 +64,18 @@ STT_MODEL_SIZE=tiny
 STT_DEVICE=auto
 STT_COMPUTE_TYPE=auto
 
-# LLM Classifier Provider: ollama (default) | gemini_free | groq_free
-LLM_PROVIDER=ollama
-OLLAMA_URL=http://localhost:11434
-OLLAMA_MODEL=qwen2.5:7b-instruct
+# Groq API classifier
+LLM_PROVIDER=groq_free
+GROQ_API_KEY=your_groq_api_key
 
-# Optional Free-Tier API fallbacks (Zero keys needed if using Ollama)
+# Optional alternate provider
 GEMINI_API_KEY=
-GROQ_API_KEY=
 
 # Optional Marathi IndicConformer
 ENABLE_INDIC_CONFORMER=false
 ```
+
+No Ollama service or local LLM model is required. If Groq is unavailable, the local high-confidence tactic rules continue to produce risk scores.
 
 ### CPU vs GPU Performance Expectations
 - **CPU (Default):**

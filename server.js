@@ -6,22 +6,7 @@ const { WebSocket, WebSocketServer } = require('ws');
 
 const app = express();
 app.use(express.static(require('path').join(__dirname, 'public')));
-app.get('/api/ice', (_req, res) => {
-  const iceServers = [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun.relay.metered.ca:80' }
-  ];
-  const turnUrls = (process.env.TURN_URLS || '').split(';').map(url => url.trim()).filter(Boolean);
-  const turnConfigured = turnUrls.length > 0 && Boolean(process.env.TURN_USERNAME) && Boolean(process.env.TURN_CREDENTIAL);
-  if (turnConfigured) {
-    iceServers.push({
-      urls: turnUrls,
-      username: process.env.TURN_USERNAME,
-      credential: process.env.TURN_CREDENTIAL
-    });
-  }
-  res.set('Cache-Control', 'no-store').json({ iceServers });
-});
+app.get('/api/ice', createIceConfigHandler());
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 const peers = new Map(); // id -> ws
@@ -99,19 +84,85 @@ wss.on('connection', (ws, req) => {
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, '0.0.0.0', () => {
-  console.log('Running on http://localhost:' + PORT);
-  for (const addresses of Object.values(os.networkInterfaces())) {
-    for (const address of addresses || []) {
-      if (address.family === 'IPv4' && !address.internal) {
-        console.log(`LAN address: http://${address.address}:${PORT}`);
+if (require.main === module) {
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log('Running on http://localhost:' + PORT);
+    for (const addresses of Object.values(os.networkInterfaces())) {
+      for (const address of addresses || []) {
+        if (address.family === 'IPv4' && !address.internal) {
+          console.log(`LAN address: http://${address.address}:${PORT}`);
+        }
       }
     }
-  }
-  console.log('Mobile browsers require HTTPS for microphone access; use an HTTPS tunnel for phone calls.');
-  console.log(turnUrlsConfigured() ? 'Custom TURN relay configured.' : 'No TURN relay configured; calls may fail across restrictive networks.');
-});
+    console.log('Mobile browsers require HTTPS for microphone access; use an HTTPS tunnel for phone calls.');
+    console.log(turnUrlsConfigured() ? 'TURN relay configured.' : 'No TURN relay configured; calls may fail across restrictive networks.');
+  });
+}
 
 function turnUrlsConfigured() {
-  return Boolean(process.env.TURN_URLS && process.env.TURN_USERNAME && process.env.TURN_CREDENTIAL);
+  return Boolean(
+    (process.env.CLOUDFLARE_TURN_KEY_ID && process.env.CLOUDFLARE_TURN_KEY_API_TOKEN) ||
+    (process.env.TURN_URLS && process.env.TURN_USERNAME && process.env.TURN_CREDENTIAL)
+  );
 }
+
+function createIceConfigHandler({ env = process.env, fetchImpl = globalThis.fetch, logger = console } = {}) {
+  return async (_req, res) => {
+    const iceServers = [
+      { urls: 'stun:stun.cloudflare.com:3478' },
+      { urls: 'stun:stun.l.google.com:19302' }
+    ];
+
+    const cloudflareKeyId = env.CLOUDFLARE_TURN_KEY_ID;
+    const cloudflareToken = env.CLOUDFLARE_TURN_KEY_API_TOKEN;
+    if (cloudflareKeyId && cloudflareToken && fetchImpl) {
+      try {
+        const response = await fetchImpl(
+          `https://rtc.live.cloudflare.com/v1/turn/keys/${encodeURIComponent(cloudflareKeyId)}/credentials/generate-ice-servers`,
+          {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${cloudflareToken}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ ttl: 86400 })
+          }
+        );
+        if (!response.ok) throw new Error(`Cloudflare TURN returned HTTP ${response.status}`);
+        const result = await response.json();
+        const cloudflareServers = Array.isArray(result.iceServers) ? result.iceServers : [];
+        const turnServers = cloudflareServers
+          .filter(server => server && server.urls && server.username && server.credential)
+          .map(server => ({
+            ...server,
+            urls: (Array.isArray(server.urls) ? server.urls : [server.urls])
+              // Cloudflare's port 53 alternate can hang in browser ICE gathering.
+              .filter(url => typeof url === 'string' && !/:53(?:\?|$)/i.test(url))
+          }))
+          .filter(server => server.urls.length > 0);
+        if (!turnServers.length) throw new Error('Cloudflare returned no usable TURN URLs');
+        return res.set('Cache-Control', 'no-store').json({
+          iceServers: [...iceServers, ...turnServers],
+          turnConfigured: true,
+          turnProvider: 'cloudflare'
+        });
+      } catch (error) {
+        // Never include request headers or credentials in logs or client responses.
+        logger.warn('Cloudflare TURN credential generation failed:', error.message);
+      }
+    }
+
+    const turnUrls = (env.TURN_URLS || '').split(';').map(url => url.trim()).filter(Boolean);
+    const hasStaticTurn = turnUrls.length > 0 && Boolean(env.TURN_USERNAME) && Boolean(env.TURN_CREDENTIAL);
+    if (hasStaticTurn) {
+      iceServers.push({ urls: turnUrls, username: env.TURN_USERNAME, credential: env.TURN_CREDENTIAL });
+    }
+    return res.set('Cache-Control', 'no-store').json({
+      iceServers,
+      turnConfigured: hasStaticTurn,
+      turnProvider: hasStaticTurn ? 'custom' : null
+    });
+  };
+}
+
+module.exports = { createIceConfigHandler };

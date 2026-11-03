@@ -24,7 +24,7 @@ The result is a 0–100 risk score, a Low/Medium/High/Critical level, evidence-l
 - **Analyzes the caller, not the recipient:** the AI audio graph uses the remote caller’s track, so the victim’s speech does not drive the scam score.
 - **Designed for Indian scam patterns:** includes Hindi, Marathi, English, and Hinglish speech handling, with tactics covering digital-arrest threats, OTP harvesting, fake KYC, remote-access apps, and payment coercion.
 - **Turns detection into action:** the interface shows a live transcript, the behaviors behind the score, and threat-specific advice, with sound and vibration alerts for critical warnings.
-- **Supports a local-first setup:** speech recognition and the backend can run on the host computer; Ollama can provide local language-model classification. Gemini and Groq are optional provider settings.
+- **Uses Groq for AI classification:** speech recognition and risk scoring run in the local AI service; transcript text and conversation context are sent to Groq for tactic classification.
 
 ## How it works
 
@@ -66,7 +66,7 @@ The demo is illustrative: model output depends on audio quality, the selected la
 
 - Node.js 18 or later
 - Python 3.10 or later
-- Ollama with `qwen2.5:7b-instruct` for the default local classifier (or choose another configured provider in `ai/.env`)
+- A Groq API key configured as `GROQ_API_KEY` in `ai/.env`
 
 ### Install
 
@@ -78,12 +78,11 @@ cd ai
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-Copy-Item .env.example .env
-ollama pull qwen2.5:7b-instruct
+if (!(Test-Path .env)) { Copy-Item .env.example .env }
 cd ..
 ```
 
-Edit `ai/.env` to choose the speech model size and classifier provider. The example configuration uses a local Ollama model; optional Gemini and Groq settings are also listed there.
+Set `LLM_PROVIDER=groq_free` and `GROQ_API_KEY` in `ai/.env`. If `ai/.env` already exists, preserve it instead of replacing it with the example. Keep the key private and do not commit it. No Ollama installation is needed.
 
 ### Start both services
 
@@ -95,28 +94,31 @@ This starts the calling app and signaling service on port `3000`, plus the AI se
 
 ## Try it on phones
 
-Phone browsers require HTTPS to grant microphone access. To test across phones, configure TURN credentials from your provider **before** starting the services:
+Phone browsers require HTTPS to grant microphone access. Keep using Cloudflare Tunnel for the mobile web link; it does not carry WebRTC call audio. For calls blocked by mobile or Wi-Fi NAT, Metered lists a 500 MB free TURN trial with no credit card required. Create a Metered TURN credential, then copy the username, password, and TURN URLs from its **Show ICE Servers Array** view. On the free plan, Metered documents `standard.relay.metered.ca` as the available region. Allow up to two minutes for a new credential to propagate. See [Metered's free trial details](https://www.metered.ca/pricing) and [credential setup guide](https://www.metered.ca/docs/turn-server-service/creating-turn-credentials/).
 
 ```powershell
-$env:TURN_URLS = 'turn:your-turn-host:80;turn:your-turn-host:443'
-$env:TURN_USERNAME = 'your-turn-username'
-$env:TURN_CREDENTIAL = 'your-turn-credential'
+$env:TURN_URLS = 'turn:standard.relay.metered.ca:80;turn:standard.relay.metered.ca:80?transport=tcp;turn:standard.relay.metered.ca:443;turns:standard.relay.metered.ca:443?transport=tcp'
+$env:TURN_USERNAME = 'paste-metered-username'
+$env:TURN_CREDENTIAL = 'paste-metered-password'
 .\start.bat
 ```
 
-Replace the example URLs with the exact ICE server URLs supplied by your TURN provider. Then, in a second PowerShell window, expose the app over HTTPS:
+The app loads these ICE servers from `/api/ice`. Keep the TURN username/password in the server environment, not frontend code. Cloudflare Realtime TURN remains supported if you already have a TURN key, through `CLOUDFLARE_TURN_KEY_ID` and `CLOUDFLARE_TURN_KEY_API_TOKEN`.
+
+Install `cloudflared` from [Cloudflare's Windows downloads](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/downloads/), then run it in a second PowerShell window:
 
 ```powershell
-npx cloudflared tunnel --url http://localhost:3000
+cloudflared tunnel --url http://localhost:3000
 ```
 
-Open the generated HTTPS URL on both devices. Keep the app, AI service, and tunnel running during the call. **Never commit TURN credentials or AI API keys.**
+Open the generated `https://....trycloudflare.com` URL on the first phone. Open the same URL with `?id=1002` on the second phone, then call line `1002` from the first. The first phone uses line `1001` by default. Keep the app, AI service, and tunnel running during the call. The call screen reports whether TURN is configured and whether the active media route is direct or relayed. **Never commit TURN credentials or AI API keys.**
 
 ## Tests
 
-Run the deterministic risk and sequence tests from the project folder:
+Run the signaling server ICE configuration tests and deterministic risk tests from the project folder:
 
 ```powershell
+npm run test:server
 ai\.venv\Scripts\python.exe -m pytest ai\tests\test_pipeline.py -v
 ```
 
@@ -139,4 +141,4 @@ ai/alert_generator.py     Human-readable warnings and actions
 
 ## Scope and limitations
 
-ScamChain is a prototype for a live browser call, not an integration with the phone’s native cellular dialer. Recognition and classification can be delayed or wrong, especially with noisy audio, accents, code-switching, or an unavailable language-model provider. A risk score is an aid to judgment, not proof that a caller is fraudulent or legitimate. Calls across restrictive networks require a working TURN service. Use local Ollama when you want classification to stay on your own machine; remote classifier providers receive transcript text and context.
+ScamChain is a prototype for a live browser call, not an integration with the phone’s native cellular dialer. Recognition and classification can be delayed or wrong, especially with noisy audio, accents, code-switching, or an unavailable language-model provider. A risk score is an aid to judgment, not proof that a caller is fraudulent or legitimate. Calls across restrictive networks require a working TURN service. Groq receives transcript text and conversation context; call audio is transcribed locally by the AI service.

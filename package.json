@@ -4,6 +4,9 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
+    "build:frontend": "cd frontend && npm run build",
+    "test:server": "node --test",
+    "dev:frontend": "cd frontend && npm run dev",
     "start:ai": "cd ai && .venv\\Scripts\\python.exe -m uvicorn main:app --host 0.0.0.0 --port 8000",
     "dev:all": "start.bat"
   },

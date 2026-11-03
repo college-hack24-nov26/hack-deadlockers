@@ -101,22 +101,24 @@ const wsUrl = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${aiHost}/ws/a
 
 ### Option C — Expose Local Machine via Cloudflare Tunnel (No server cost, uses your PC)
 
-This is the fastest approach for demos/hackathons and phone testing. Phone browsers require HTTPS before they allow microphone access. Calls across networks also need working TURN credentials. Create credentials with a provider such as Metered, then set these PowerShell variables before starting the services (use the hostname and credentials from your provider):
+This is the fastest approach for demos/hackathons and phone testing. Phone browsers require HTTPS before they allow microphone access. Install `cloudflared` from [Cloudflare's Windows downloads](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/downloads/). Cloudflare Tunnel exposes the website and signaling; WebRTC voice needs a TURN relay if direct networking is blocked. Metered lists a 500 MB free TURN trial with no credit card required. Create a Metered TURN credential, then copy the username, password, and TURN URLs from **Show ICE Servers Array**. The free plan uses `standard.relay.metered.ca`; a new credential can take up to two minutes to propagate. See [Metered pricing](https://www.metered.ca/pricing) and its [credential guide](https://www.metered.ca/docs/turn-server-service/creating-turn-credentials/).
 
 ```powershell
-$env:TURN_URLS = 'turn:global.relay.metered.ca:80;turn:global.relay.metered.ca:80?transport=tcp;turn:global.relay.metered.ca:443;turns:global.relay.metered.ca:443?transport=tcp'
-$env:TURN_USERNAME = 'your-turn-username'
-$env:TURN_CREDENTIAL = 'your-turn-credential'
+$env:TURN_URLS = 'turn:standard.relay.metered.ca:80;turn:standard.relay.metered.ca:80?transport=tcp;turn:standard.relay.metered.ca:443;turns:standard.relay.metered.ca:443?transport=tcp'
+$env:TURN_USERNAME = 'paste-metered-username'
+$env:TURN_CREDENTIAL = 'paste-metered-password'
 .\start.bat
 ```
 
-The Node server reads the TURN settings through `/api/ice` and proxies AI WebSocket traffic to the local FastAPI service. With both services still running, open another terminal and start one HTTPS tunnel:
+The app loads these ICE settings from `/api/ice`. Keep the TURN username and password in the Node server environment, not frontend code. Cloudflare Realtime TURN is also supported if you already have a TURN key, through `CLOUDFLARE_TURN_KEY_ID` and `CLOUDFLARE_TURN_KEY_API_TOKEN`.
 
-```cmd
-npx cloudflared tunnel --url http://localhost:3000
+The browser fetches TURN settings from `/api/ice`, and the Node server proxies AI WebSocket traffic to the local FastAPI service. With both services still running, open another terminal and start the HTTPS tunnel:
+
+```powershell
+cloudflared tunnel --url http://localhost:3000
 ```
 
-Open the generated HTTPS URL on both devices. Restart the Node server after changing TURN settings. If the call still fails, the app now reports whether either peer gathered a TURN relay candidate.
+Open the generated `https://....trycloudflare.com` URL on the first phone. On the second phone, open the same URL with `?id=1002`; line `1001` is the default on the first phone. Call `1002` from the first phone and accept on the second. Leave Node, AI, and `cloudflared` running. The call page reports TURN configuration, selected network route, received peer-audio bytes, and playback state. Restart Node after changing TURN settings.
 
 ---
 
@@ -127,5 +129,5 @@ Open the generated HTTPS URL on both devices. Restart the Node server after chan
 - [ ] `STT_MODEL_SIZE=small` for best accuracy (or `tiny` for faster cold starts)
 - [ ] CORS origins updated in `ai/config.py` to match your deployed Node.js domain
 - [ ] `ai/.env` is in `.gitignore` (never commit API keys!)
-- [ ] Set `TURN_URLS`, `TURN_USERNAME`, and `TURN_CREDENTIAL` in the Node.js server environment using credentials from your TURN provider. The app loads these from `/api/ice`; the old shared Open Relay credentials are no longer used.
+- [ ] Set `CLOUDFLARE_TURN_KEY_ID` and `CLOUDFLARE_TURN_KEY_API_TOKEN`, or configure a custom TURN provider through `TURN_URLS`, `TURN_USERNAME`, and `TURN_CREDENTIAL`. The app generates or loads ICE settings from `/api/ice`; the old shared Open Relay credentials are no longer used.
 

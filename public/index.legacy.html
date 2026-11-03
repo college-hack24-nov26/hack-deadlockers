@@ -1,0 +1,578 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>CallApp</title>
+<style>
+  *{box-sizing:border-box} body{margin:0;font-family:system-ui,sans-serif;background:#0f1115;color:#fff;min-height:100vh;display:flex;align-items:center;justify-content:center}
+  .card{width:100%;max-width:380px;padding:28px 22px;text-align:center}
+  input{width:100%;padding:14px;border-radius:12px;border:1px solid #333;background:#1a1d24;color:#fff;font-size:18px;text-align:center;margin:8px 0}
+  button{border:0;border-radius:50%;width:68px;height:68px;font-size:26px;color:#fff;cursor:pointer;margin:0 10px}
+  .btn{border-radius:12px;width:100%;height:auto;padding:14px;font-size:17px;background:#2f6fed;margin:8px 0}
+  .green{background:#22a559}.red{background:#e0393e}.grey{background:#3a3f4b}.on{background:#fff;color:#000}
+  .hidden{display:none} #status{color:#9aa3b2;margin:10px 0;min-height:22px}
+  .avatar{width:96px;height:96px;border-radius:50%;background:#2a2f3a;margin:20px auto;display:flex;align-items:center;justify-content:center;font-size:40px}
+  #peer{font-size:24px;font-weight:600} #timer{color:#9aa3b2;font-size:18px;margin-top:6px}
+  .meter{height:6px;background:#2a2f3a;border-radius:3px;margin:6px 0;overflow:hidden}.meter i{display:block;height:100%;width:0;background:#22a559}
+  /* AI Scam Shield Styles */
+  .shield-panel{margin-top:20px;background:#151820;border:1px solid #262c38;border-radius:14px;padding:12px;text-align:left;font-size:13px}
+  .shield-header{display:flex;align-items:center;justify-content:space-between;cursor:pointer;user-select:none}
+  .shield-title{display:flex;align-items:center;gap:6px;font-weight:600;font-size:13px}
+  .shield-badge{font-size:11px;padding:2px 8px;border-radius:10px;background:#242a36;color:#9aa3b2;display:flex;align-items:center;gap:4px}
+  .dot{width:7px;height:7px;border-radius:50%;display:inline-block;background:#6c757d}
+  .dot.listening{background:#22a559}
+  .dot.degraded{background:#f59e0b}
+  .dot.error{background:#e0393e}
+  .dot.connecting{background:#3b82f6}
+  .shield-body{margin-top:10px;padding-top:10px;border-top:1px solid #232834}
+  .shield-stats{display:flex;justify-content:space-between;align-items:center;font-size:12px;color:#8a94a6;margin-bottom:8px}
+  .risk-bar-bg{height:12px;background:#101319;border:1px solid #232834;border-radius:6px;overflow:hidden;margin:6px 0 10px;box-shadow:inset 0 1px 3px rgba(0,0,0,0.5)}
+  .risk-bar-fill{height:100%;width:0%;background:#22a559;transition:width 0.4s ease,background 0.4s ease;border-radius:5px}
+  .chips-container{display:flex;flex-wrap:wrap;gap:4px;margin:6px 0}
+  .tactic-chip{font-size:10px;padding:2px 6px;border-radius:6px;background:#2b1a1f;color:#f87171;border:1px solid #7f1d1d}
+  .alert-box{padding:8px;border-radius:8px;background:#1a1d24;margin-top:8px;font-size:11px;border-left:3px solid #22a559}
+  .alert-box.medium{border-color:#f59e0b;background:#2a2318}
+  .alert-box.high{border-color:#ea580c;background:#2e1b15}
+  .alert-box.critical{border-color:#dc2626;background:#381519}
+  .transcript-box{max-height:90px;overflow-y:auto;background:#0d0f14;padding:6px 8px;border-radius:8px;margin-top:6px;font-family:monospace;font-size:11px;color:#cbd5e1}
+  .highlight-tactic{background:rgba(220,38,38,0.3);color:#fca5a5;padding:1px 3px;border-radius:3px}
+</style>
+</head>
+<body>
+<div class="card">
+  <div id="loginView">
+    <h2>CallApp</h2>
+    <input id="myId" placeholder="Your number / ID (e.g. 1001)" inputmode="numeric">
+    <button class="btn" onclick="register()">Continue</button>
+  </div>
+
+  <div id="dialView" class="hidden">
+    <div id="me" style="color:#9aa3b2"></div>
+    <input id="toId" placeholder="Number to call" inputmode="numeric">
+    <button class="btn" onclick="startCall()">📞 Call</button>
+  </div>
+
+  <div id="callView" class="hidden">
+    <div class="avatar">👤</div>
+    <div id="peer"></div>
+    <div id="timer"></div>
+    <div id="controls" style="margin-top:30px">
+      <button id="acceptBtn" class="green hidden" onclick="acceptCall()">📞</button>
+      <button id="muteBtn" class="grey hidden" onclick="toggleMute()">🎤</button>
+      <button id="endBtn" class="red" onclick="endCall(true)">✖</button>
+    </div>
+    <div class="hidden" id="meters" style="margin-top:24px;font-size:12px;color:#9aa3b2">
+      You<div class="meter"><i id="lvlLocal"></i></div>
+      Them<div class="meter"><i id="lvlRemote"></i></div>
+    </div>
+    <!-- AI Scam Shield Panel -->
+    <div id="shieldPanel" class="shield-panel hidden">
+      <div class="shield-header" onclick="toggleShieldBody()">
+        <span class="shield-title">🛡️ AI Scam Shield</span>
+        <span id="shieldBadge" class="shield-badge">
+          <i id="shieldDot" class="dot"></i>
+          <span id="shieldStatusText">Connecting…</span>
+        </span>
+      </div>
+      <div id="shieldBody" class="shield-body">
+        <div class="shield-stats">
+          <span>Audio: <b id="shieldBytes">0 KB</b></span>
+          <span>Risk: <b id="shieldRiskText" style="font-size:13px;color:#22a559">0% (Low)</b></span>
+        </div>
+        <div class="risk-bar-bg">
+          <div id="shieldRiskBar" class="risk-bar-fill"></div>
+        </div>
+        <div id="shieldChips" class="chips-container"></div>
+        <div id="shieldAlert" class="alert-box">
+          <b id="shieldAlertMsg">Monitoring caller for fraud tactics…</b>
+          <div id="shieldAlertAction" style="color:#9aa3b2;margin-top:2px">No immediate action needed.</div>
+        </div>
+        <div id="shieldTranscript" class="transcript-box">
+          <span style="color:#64748b;font-style:italic">Waiting for speech…</span>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div id="status"></div>
+  <audio id="remoteAudio" autoplay playsinline></audio>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const DEFAULT_ICE_SERVERS = [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun.relay.metered.ca:80' }
+];
+
+let ws, myId, peerId, pc, localStream, remoteStream, pendingOffer, pendingIce = [], ringTimer, tick, startTs, audioCtx, connectionTimer;
+
+/* ===== AUDIO ACCESS HOOK (future scam detection plugs in here) ===== */
+// Called with 1-second chunks (Blob, webm/opus) of each side of the call.
+function onAudioChunk(who, blob) { /* e.g. upload to your backend over a WebSocket */ }
+function tapStream(stream, who, meterEl) {
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') {
+      audioCtx.resume();
+    }
+    const src = audioCtx.createMediaStreamSource(stream);
+    const an = audioCtx.createAnalyser();
+    an.fftSize = 256;
+    src.connect(an);
+    const buf = new Uint8Array(an.frequencyBinCount);
+    (function loop(){
+      if (!pc) return;
+      an.getByteTimeDomainData(buf);
+      let max = 0;
+      for (const v of buf) max = Math.max(max, Math.abs(v - 128));
+      if (meterEl) meterEl.style.width = Math.min(100, max * 1.6) + '%';
+      requestAnimationFrame(loop);
+    })();
+  } catch(e) {
+    console.warn('Audio tap warning:', e);
+  }
+}
+
+/* ===== SIGNALING ===== */
+function send(o){ ws.send(JSON.stringify(o)); }
+function register(){
+  myId = $('myId').value.trim(); if(!myId) return;
+  if (!window.isSecureContext && !['localhost', '127.0.0.1', '::1'].includes(location.hostname)) {
+    status('This phone needs the app opened over HTTPS to use its microphone.');
+  }
+  ws = new WebSocket((location.protocol==='https:'?'wss':'ws')+'://'+location.host);
+  ws.onopen = () => send({type:'register', id:myId});
+  ws.onmessage = async e => {
+    const m = JSON.parse(e.data);
+    if (m.type==='registered'){ show('dialView'); $('me').textContent='Your number: '+myId; }
+    else if (m.type==='error') status(m.msg);
+    else if (m.type==='unavailable'){ status('User is offline'); endCall(false); }
+    else if (m.type==='offer'){
+      if (pc || pendingOffer){ send({type:'reject', to:m.from}); return; } // busy
+      pendingOffer = m; peerId = m.from; showIncoming(); }
+    else if (m.type==='answer'){ clearTimeout(ringTimer); await pc.setRemoteDescription(m.sdp); flushIce(); status('Connecting…'); }
+    else if (m.type==='ice'){ pc && pc.remoteDescription ? pc.addIceCandidate(m.candidate) : pendingIce.push(m.candidate); }
+    else if (m.type==='reject'){ status('Call declined'); endCall(false); }
+    else if (m.type==='hangup'){ status('Call ended'); endCall(false); }
+  };
+  ws.onclose = () => status('Disconnected from server');
+}
+function flushIce(){ pendingIce.forEach(c=>pc.addIceCandidate(c)); pendingIce=[]; }
+
+/* ===== CALL FLOW ===== */
+async function makePC(){
+  if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+    throw new Error('secure-context');
+  }
+  localStream = await navigator.mediaDevices.getUserMedia({ audio:{ echoCancellation:true, noiseSuppression:true, autoGainControl:true } });
+  pc = new RTCPeerConnection({ iceServers: await loadIceServers() });
+  localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
+  pc.onicecandidate = e => e.candidate && send({type:'ice', to:peerId, candidate:e.candidate});
+  pc.onicecandidateerror = e => console.warn('[WebRTC] ICE candidate error:', e.errorCode, e.errorText, e.url);
+  pc.ontrack = e => {
+    remoteStream = e.streams[0] || new MediaStream([e.track]);
+    $('remoteAudio').srcObject = remoteStream;
+    try { $('remoteAudio').play(); } catch(err) {}
+    tapStream(remoteStream,'remote',$('lvlRemote'));
+    if (pc && pc.connectionState === 'connected') {
+      setupAudioWorklet();
+    }
+  };
+  pc.onconnectionstatechange = () => {
+    const activePc = pc;
+    if (!activePc) return;
+    console.log('[WebRTC] Connection state:', activePc.connectionState, 'ICE:', activePc.iceConnectionState);
+    if (activePc.connectionState === 'connected') {
+      clearTimeout(connectionTimer);
+      onConnected();
+    } else if (activePc.connectionState === 'disconnected' || activePc.connectionState === 'failed') {
+      const failed = activePc.connectionState === 'failed';
+      status(failed ? 'Network connection failed. Checking…' : 'Network interrupted. Trying to recover…');
+      clearTimeout(connectionTimer);
+      connectionTimer = setTimeout(() => {
+        if (pc !== activePc || activePc.connectionState === 'connected') return;
+        diagnoseIceFailure(activePc).then(message => {
+          if (pc !== activePc) return;
+          status(message);
+          endCall(false);
+        });
+      }, failed ? 4000 : 12000);
+    } else if (activePc.connectionState === 'closed') {
+      endCall(false);
+    }
+  };
+  tapStream(localStream,'local',$('lvlLocal'));
+}
+async function loadIceServers() {
+  try {
+    const response = await fetch('/api/ice', { cache: 'no-store' });
+    if (!response.ok) throw new Error(`ICE config HTTP ${response.status}`);
+    const config = await response.json();
+    if (!Array.isArray(config.iceServers) || !config.iceServers.length) throw new Error('Empty ICE server list');
+    console.info('[WebRTC] ICE servers loaded:', config.iceServers.map(s => s.urls));
+    return config.iceServers;
+  } catch (error) {
+    console.warn('[WebRTC] Could not load server ICE config; using STUN only:', error);
+    return DEFAULT_ICE_SERVERS;
+  }
+}
+async function diagnoseIceFailure(activePc) {
+  try {
+    const stats = await activePc.getStats();
+    const candidates = [...stats.values()].filter(s => s.type === 'local-candidate' || s.type === 'remote-candidate');
+    const pairs = [...stats.values()].filter(s => s.type === 'candidate-pair' && (s.selected || s.nominated || s.state === 'succeeded'));
+    const types = [...new Set(candidates.map(c => `${c.candidateType}${c.relayProtocol ? '/' + c.relayProtocol : ''}`))];
+    const selected = pairs.map(pair => {
+      const local = stats.get(pair.localCandidateId);
+      const remote = stats.get(pair.remoteCandidateId);
+      return `${local?.candidateType || '?'} ↔ ${remote?.candidateType || '?'}`;
+    });
+    console.error('[WebRTC] ICE diagnostics:', { iceState: activePc.iceConnectionState, candidates: types, selectedPairs: selected });
+    if (!candidates.some(c => c.candidateType === 'relay')) {
+      return 'No TURN relay was found. Add working TURN credentials, then restart the server and retry.';
+    }
+    return 'A TURN relay was found, but the network blocked the media route. Try both devices on the same Wi-Fi or a different network.';
+  } catch (error) {
+    console.error('[WebRTC] Could not collect ICE diagnostics:', error);
+    return 'Call could not connect. Check the HTTPS link, TURN settings, and both devices’ networks.';
+  }
+}
+async function startCall(){
+  peerId = $('toId').value.trim(); if(!peerId||peerId===myId) return;
+  showCall('Calling…'); await activateAudioContext();
+  try { await makePC(); } catch(e){ status(mediaAccessError(e)); return endCall(false); }
+  const offer = await pc.createOffer(); await pc.setLocalDescription(offer);
+  send({type:'offer', to:peerId, sdp:pc.localDescription});
+  ringTimer = setTimeout(()=>{ status('No answer'); endCall(true); }, 45000);
+}
+function showIncoming(){ showCall('Incoming call…'); $('acceptBtn').classList.remove('hidden'); }
+async function acceptCall(){
+  $('acceptBtn').classList.add('hidden'); status('Connecting…');
+  await activateAudioContext();
+  try { await makePC(); } catch(e){ status(mediaAccessError(e)); return endCall(true); }
+  await pc.setRemoteDescription(pendingOffer.sdp); flushIce(); pendingOffer=null;
+  const ans = await pc.createAnswer(); await pc.setLocalDescription(ans);
+  send({type:'answer', to:peerId, sdp:pc.localDescription});
+}
+function onConnected(){
+  status(''); startTs=Date.now(); clearInterval(tick); $('muteBtn').classList.remove('hidden'); $('meters').classList.remove('hidden');
+  tick=setInterval(()=>{ const s=Math.floor((Date.now()-startTs)/1000);
+    $('timer').textContent=String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0'); },1000);
+  startAIAnalysis();
+}
+function toggleMute(){ const t=localStream.getAudioTracks()[0]; t.enabled=!t.enabled;
+  $('muteBtn').classList.toggle('on',!t.enabled); $('muteBtn').textContent=t.enabled?'🎤':'🔇'; }
+function endCall(notify){
+  if (notify && peerId){ send({type: pendingOffer?'reject':'hangup', to:peerId}); }
+  clearTimeout(ringTimer); clearTimeout(connectionTimer); clearInterval(tick);
+  stopAIAnalysis();
+  [localStream, remoteStream].forEach(s => { if(s){ s._rec && s._rec.state!=='inactive' && s._rec.stop(); s.getTracks().forEach(t=>t.stop()); }});
+  pc && pc.close(); pc=localStream=remoteStream=pendingOffer=null; pendingIce=[]; peerId=null;
+  $('timer').textContent=''; $('muteBtn').classList.add('hidden'); $('acceptBtn').classList.add('hidden'); $('meters').classList.add('hidden');
+  $('muteBtn').classList.remove('on'); $('muteBtn').textContent='🎤';
+  show('dialView');
+}
+
+function mediaAccessError(error) {
+  if (error?.message === 'secure-context' || !window.isSecureContext) {
+    return 'Microphone access needs HTTPS on this device. Open the app using its HTTPS link.';
+  }
+  if (error?.name === 'NotAllowedError' || error?.name === 'SecurityError') {
+    return 'Microphone permission was denied. Allow microphone access in browser settings and try again.';
+  }
+  if (error?.name === 'NotFoundError' || error?.name === 'DevicesNotFoundError') {
+    return 'No microphone was found on this device.';
+  }
+  console.error('[WebRTC] Microphone setup failed:', error);
+  return 'Could not start the microphone. Check browser permission and try again.';
+}
+
+async function activateAudioContext() {
+  try {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) throw new Error('Web Audio is unavailable in this browser.');
+    audioCtx = audioCtx || new AudioContextClass();
+    if (audioCtx.state !== 'running') await audioCtx.resume();
+    console.info('[Audio] Context state:', audioCtx.state, 'sample rate:', audioCtx.sampleRate);
+  } catch (error) {
+    console.warn('[Audio] Could not activate audio context from the call action:', error);
+  }
+}
+
+/* ===== AI SCAM SHIELD INTEGRATION ===== */
+let aiWs = null, aiWorkletNode = null, aiAudioSource = null, aiReconnectTimer = null, aiReconnectDelay = 2000, callId = null;
+
+function toggleShieldBody() {
+  const b = $('shieldBody');
+  b.style.display = (b.style.display === 'none') ? 'block' : 'none';
+}
+
+function updateShieldStatus(state, msg) {
+  const dot = $('shieldDot');
+  const txt = $('shieldStatusText');
+  if (dot) dot.className = 'dot ' + (state || '');
+  if (txt) txt.textContent = msg || state;
+}
+
+async function startAIAnalysis() {
+  callId = [myId, peerId].sort().join('-');
+  $('shieldPanel').classList.remove('hidden');
+  updateShieldStatus('connecting', 'Connecting to caller audio…');
+  connectAIWebSocket();
+  setupAudioWorklet();
+}
+
+function connectAIWebSocket() {
+  if (!callId) return;
+  const proto = (location.protocol === 'https:') ? 'wss:' : 'ws:';
+  const wsUrl = `${proto}//${location.host}/ws/analyze/${encodeURIComponent(callId)}`;
+  try {
+    aiWs = new WebSocket(wsUrl);
+    aiWs.binaryType = 'arraybuffer';
+
+    aiWs.onopen = () => {
+      aiReconnectDelay = 2000;
+      updateShieldStatus('listening', 'Listening to caller');
+      aiWs.send(JSON.stringify({ type: 'start', call_id: callId, sample_rate: 16000 }));
+      setupAudioWorklet();
+    };
+
+    aiWs.onmessage = e => {
+      try {
+        const data = JSON.parse(e.data);
+        handleAIMessage(data);
+      } catch (err) {
+        console.warn('AI WS message parse error:', err);
+      }
+    };
+
+    aiWs.onclose = () => {
+      if (pc && pc.connectionState === 'connected') {
+        updateShieldStatus('error', 'AI Offline (retrying)');
+        scheduleAIRetry();
+      } else {
+        updateShieldStatus('', 'Disconnected');
+      }
+    };
+
+    aiWs.onerror = () => {
+      updateShieldStatus('error', 'AI Offline');
+      if (aiWs) aiWs.close();
+    };
+  } catch (err) {
+    console.warn('AI WS connection error:', err);
+    scheduleAIRetry();
+  }
+}
+
+function scheduleAIRetry() {
+  clearTimeout(aiReconnectTimer);
+  if (!pc || pc.connectionState !== 'connected') return;
+  aiReconnectTimer = setTimeout(() => {
+    connectAIWebSocket();
+    aiReconnectDelay = Math.min(aiReconnectDelay * 1.5, 15000);
+  }, aiReconnectDelay);
+}
+
+let aiRemoteSource = null, aiSilentSink = null, aiWorkletSetup = null;
+
+async function setupAudioWorklet() {
+  if (aiWorkletSetup) return aiWorkletSetup;
+  aiWorkletSetup = (async () => {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') {
+      await audioCtx.resume();
+    }
+    await audioCtx.audioWorklet.addModule('pcm-worklet.js');
+
+    if (!aiWorkletNode) {
+      aiWorkletNode = new AudioWorkletNode(audioCtx, 'pcm-worklet-processor');
+      aiWorkletNode.port.onmessage = e => {
+        if (aiWs && aiWs.readyState === WebSocket.OPEN) {
+          aiWs.send(e.data); // binary 250ms Int16 PCM frame
+        }
+      };
+      aiWorkletNode.onprocessorerror = event => {
+        console.error('[Audio] PCM worklet processor failed:', event);
+        updateShieldStatus('error', 'Audio capture failed');
+      };
+      // Keep Web Audio clock active on mobile browsers (Android Chrome)
+      aiSilentSink = audioCtx.createGain();
+      aiSilentSink.gain.value = 0.0;
+      aiWorkletNode.connect(aiSilentSink);
+      aiSilentSink.connect(audioCtx.destination);
+    }
+
+    // Connect remote caller voice
+    if (remoteStream && !aiRemoteSource) {
+      aiRemoteSource = audioCtx.createMediaStreamSource(remoteStream);
+      aiRemoteSource.connect(aiWorkletNode);
+    }
+
+    console.info('[Audio] Analysis graph ready:', {
+      contextState: audioCtx.state,
+      remoteTracks: remoteStream?.getAudioTracks().map(t => ({ state: t.readyState, muted: t.muted }))
+    });
+  })();
+  try {
+    await aiWorkletSetup;
+  } catch (err) {
+    console.warn('AudioWorklet setup error:', err);
+    updateShieldStatus('error', 'Audio capture unavailable');
+  } finally {
+    aiWorkletSetup = null;
+  }
+}
+
+function handleAIMessage(m) {
+  if (m.type === 'status') {
+    updateShieldStatus(m.state, m.state === 'listening' ? 'Listening to caller' : (m.state === 'degraded' ? 'Degraded' : m.state));
+    if (m.audio_bytes !== undefined) {
+      const kb = (m.audio_bytes / 1024).toFixed(1);
+      $('shieldBytes').textContent = kb + ' KB';
+    }
+  } else if (m.type === 'transcript') {
+    renderTranscript(m);
+  } else if (m.type === 'tactics') {
+    renderTactics(m.items || []);
+  } else if (m.type === 'risk') {
+    renderRisk(m);
+  } else if (m.type === 'alert') {
+    renderAlert(m);
+  }
+}
+
+function renderTranscript(m) {
+  const box = $('shieldTranscript');
+  if (box.firstElementChild && box.firstElementChild.style.fontStyle === 'italic') {
+    box.innerHTML = '';
+  }
+  const div = document.createElement('div');
+  div.id = 'utt_' + m.id;
+  div.style.marginBottom = '4px';
+  const timeStr = (m.t0 !== undefined) ? `<span style="color:#64748b;font-size:9px;margin-right:4px;">${m.t0.toFixed(1)}s</span>` : '';
+  div.innerHTML = `${timeStr}<span style="background:#222a38;color:#93c5fd;padding:1px 4px;border-radius:4px;font-size:9px;margin-right:4px;">${m.lang||'auto'}</span><span class="utt-text">${escapeHtml(m.text)}</span>`;
+  box.appendChild(div);
+  box.scrollTop = box.scrollHeight;
+}
+
+function renderTactics(tactics) {
+  const chips = $('shieldChips');
+  chips.innerHTML = '';
+  tactics.forEach(t => {
+    const chip = document.createElement('span');
+    chip.className = 'tactic-chip';
+    const timeLabel = t.t ? ` [${t.t.toFixed(0)}s]` : '';
+    chip.textContent = `${t.tactic.replace(/_/g, ' ')}${timeLabel} (${Math.round(t.confidence*100)}%)`;
+    chip.title = t.explanation || '';
+    chips.appendChild(chip);
+
+    if (t.evidence && t.evidence.length > 3) {
+      highlightEvidenceInTranscript(t.evidence);
+    }
+  });
+}
+
+function highlightEvidenceInTranscript(evidence) {
+  const spans = document.querySelectorAll('.utt-text');
+  spans.forEach(el => {
+    const raw = el.textContent;
+    if (raw.toLowerCase().includes(evidence.toLowerCase())) {
+      const idx = raw.toLowerCase().indexOf(evidence.toLowerCase());
+      const matched = raw.substring(idx, idx + evidence.length);
+      el.innerHTML = escapeHtml(raw.substring(0, idx)) +
+        `<span class="highlight-tactic">${escapeHtml(matched)}</span>` +
+        escapeHtml(raw.substring(idx + evidence.length));
+    }
+  });
+}
+
+function renderRisk(r) {
+  const score = Math.round(r.score || 0);
+  const bar = $('shieldRiskBar');
+  const txt = $('shieldRiskText');
+  if (bar) bar.style.width = score + '%';
+  if (txt) txt.textContent = `${score}% (${r.level || 'Low'})`;
+
+  let color = '#22a559';
+  if (score > 80) {
+    color = '#dc2626';
+  } else if (score > 60) {
+    color = '#ea580c';
+  } else if (score > 30) {
+    color = '#f59e0b';
+  }
+
+  if (bar) bar.style.background = color;
+  if (txt) txt.style.color = color;
+}
+
+function renderAlert(a) {
+  const box = $('shieldAlert');
+  box.className = 'alert-box ' + (a.level ? a.level.toLowerCase() : '');
+  $('shieldAlertMsg').textContent = a.message || 'Monitoring caller…';
+  $('shieldAlertAction').textContent = a.action || '';
+  if (a.level === 'Critical') {
+    if (navigator.vibrate) {
+      try { navigator.vibrate([250, 100, 250]); } catch(e) {}
+    }
+    playAlertTone();
+  }
+}
+
+function playAlertTone() {
+  try {
+    if (!audioCtx) return;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(880, audioCtx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(440, audioCtx.currentTime + 0.3);
+    gain.gain.setValueAtTime(0.15, audioCtx.currentTime);
+    gain.gain.linearRampToValueAtTime(0.01, audioCtx.currentTime + 0.3);
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.start();
+    osc.stop(audioCtx.currentTime + 0.3);
+  } catch(e) {}
+}
+
+function escapeHtml(str) {
+  return (str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function stopAIAnalysis() {
+  clearTimeout(aiReconnectTimer);
+  if (aiWs) {
+    try {
+      if (aiWs.readyState === WebSocket.OPEN) {
+        aiWs.send(JSON.stringify({ type: 'stop' }));
+      }
+      aiWs.close();
+    } catch(e) {}
+    aiWs = null;
+  }
+  if (aiWorkletNode) {
+    try { aiWorkletNode.disconnect(); } catch(e) {}
+    aiWorkletNode = null;
+  }
+  if (aiRemoteSource) {
+    try { aiRemoteSource.disconnect(); } catch(e) {}
+    aiRemoteSource = null;
+  }
+  if (aiSilentSink) {
+    try { aiSilentSink.disconnect(); } catch(e) {}
+    aiSilentSink = null;
+  }
+  callId = null;
+  $('shieldPanel').classList.add('hidden');
+}
+
+/* ===== UI ===== */
+function show(v){ ['loginView','dialView','callView'].forEach(x=>$(x).classList.toggle('hidden',x!==v)); }
+function showCall(s){ show('callView'); $('peer').textContent=peerId; status(s); }
+function status(s){ $('status').textContent=s; }
+</script>
+</body>
+</html>

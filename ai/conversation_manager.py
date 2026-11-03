@@ -18,6 +18,7 @@ class TacticEvent(BaseModel):
     explanation: str
     t: float
     stage: int = 0
+    turn_id: Optional[str] = None
 
 class ConversationManager:
     """
@@ -55,6 +56,14 @@ class ConversationManager:
     def add_tactics(self, call_id: str, events: List[TacticEvent]):
         call_events = self.tactic_events.setdefault(call_id, [])
         call_events.extend(events)
+
+    def set_turn_tactics(self, call_id: str, turn_id: str, events: List[TacticEvent]):
+        """Replace provisional tactic signals with the final result for one turn."""
+        call_events = self.tactic_events.setdefault(call_id, [])
+        retained = [event for event in call_events if event.turn_id != turn_id]
+        retained.extend(events)
+        retained.sort(key=lambda event: event.t)
+        self.tactic_events[call_id] = retained
 
     def get_tactics(self, call_id: str) -> List[TacticEvent]:
         return self.tactic_events.get(call_id, [])

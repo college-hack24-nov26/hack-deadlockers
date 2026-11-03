@@ -41,6 +41,25 @@ PRE_GATE_PATTERNS = [
 
 PRE_GATE_REGEX = re.compile("|".join(PRE_GATE_PATTERNS), re.IGNORECASE)
 
+# High precision local signals provide an immediate first score while the configured
+# language model is still classifying the utterance (or unavailable).
+FAST_TACTIC_PATTERNS = {
+    "authority_impersonation": (r"\b(?:calling|speaking|transferred|officer|inspector|branch|unit).{0,35}\b(?:cbi|police|customs|trai|rbi|cyber\s*crime|bank|court|fedex)\b|\b(?:cbi|police|customs|trai|rbi|cyber\s*crime|bank|court)\s+(?:officer|inspector|branch|department|unit|headquarters)\b", 0.88),
+    "urgency_creation": (r"\b(?:urgent(?:ly)?|immediately|right now|within\s+\d+\s*(?:minutes?|mins?|hours?)|asap|turant|jaldi|abhi|tatkal|laghech|लगेच|तुरंत|अभी|तत्काल)\b", 0.86),
+    "fear_manipulation": (r"\b(?:arrest|warrant|jail|prison|narcotics|illegal drugs|case filed|file an? fir|detained|account (?:will be )?(?:frozen|blocked)|account freeze|seized|penalty|अटक|वारंट|जेल|गिरफ्तार|खाता बंद)\b", 0.90),
+    "digital_arrest": (r"\b(?:digital\s*arrest|digital custody|stay on (?:the )?(?:phone|call)|do not disconnect|don't disconnect|camera on|keep your camera on|do not tell (?:anyone|your family)|don't tell (?:anyone|your family))\b|किसी को मत बत|कॉल मत काट|डिजिटल\s*अटक", 0.94),
+    "otp_request": (r"\b(?:share|tell|read|send|give|provide|confirm|बताओ|बताना|भेजो).{0,32}\b(?:otp|one.time password|verification code|pin|cvv)\b|\b(?:otp|verification code|pin|cvv).{0,32}\b(?:share|tell|read|send|give|provide|बताओ|बताना|भेजो)\b", 0.97),
+    "financial_manipulation": (r"\b(?:safe account|security account|verification fee|clearance fee|security deposit|transfer.{0,35}(?:money|funds|rupees|savings|account)|send.{0,25}(?:money|funds|rupees)|pay.{0,25}(?:fee|deposit|charge))\b", 0.92),
+    "kyc_fraud": (r"\b(?:kyc.{0,25}(?:update|expired|expire|suspend|block|verify|complete)|(?:update|verify|complete).{0,25}kyc)\b", 0.86),
+    "remote_access": (r"\b(?:install|download|open|use|share your screen|screen share).{0,30}\b(?:anydesk|teamviewer|rustdesk|quicksupport|remote access|screen sharing|apk)\b|\b(?:anydesk|teamviewer|rustdesk|quicksupport)\b", 0.95),
+    "reward_scam": (r"\b(?:you have won|you won|lottery prize|claim your prize|cashback.{0,25}(?:claim|fee|transfer)|reward.{0,25}(?:claim|fee|transfer))\b", 0.88),
+    "identity_manipulation": (r"\b(?:share|send|tell|provide|read|confirm).{0,32}\b(?:aadhaar|aadhar|pan card|card number|date of birth)\b", 0.88),
+}
+FAST_TACTIC_REGEX = {
+    tactic: (re.compile(pattern, re.IGNORECASE), confidence)
+    for tactic, (pattern, confidence) in FAST_TACTIC_PATTERNS.items()
+}
+
 class DetectedTacticItem(BaseModel):
     tactic: str
     confidence: float = Field(ge=0.0, le=1.0)
@@ -96,7 +115,7 @@ Output: {"tactics": [
 
 class TacticClassifier:
     """
-    Classifies caller utterances using local Ollama (or Gemini/Groq free fallbacks).
+    Classifies caller utterances using the configured Groq, Gemini, or Ollama provider.
     Uses multilingual pre-gating to skip harmless chit-chat and conserve CPU cycles.
     """
     def __init__(self):
@@ -109,6 +128,22 @@ class TacticClassifier:
             # If scam tactics were already spotted earlier in this call, analyze subsequent turns
             return True
         return bool(PRE_GATE_REGEX.search(text))
+
+    def classify_heuristically(self, turn: Turn) -> List[TacticEvent]:
+        """Return high-confidence local signals without waiting for an LLM request."""
+        events = []
+        for tactic, (pattern, confidence) in FAST_TACTIC_REGEX.items():
+            match = pattern.search(turn.text)
+            if match:
+                events.append(TacticEvent(
+                    tactic=tactic,
+                    confidence=confidence,
+                    evidence=match.group(0).strip(),
+                    explanation=f"Fast local signal detected {tactic.replace('_', ' ')}; AI classification is pending.",
+                    t=turn.t1,
+                    turn_id=turn.id,
+                ))
+        return events
 
     async def classify_utterance(self, turn: Turn, context_str: str, has_prior_tactics: bool = False) -> List[TacticEvent]:
         # Pre-gate optimization
@@ -127,15 +162,25 @@ Analyze the latest utterance for the 10 scam tactics. Respond strictly with JSON
         raw_json_str = None
         for attempt in range(2): # Try once, retry on parse failure
             try:
-                if self.provider == "gemini_free" and settings.llm.gemini_api_key:
-                    raw_json_str = await self._call_gemini(user_content)
-                    if not raw_json_str and settings.llm.groq_api_key:
-                        logger.info("Falling back to Groq...")
-                        raw_json_str = await self._call_groq(user_content)
-                elif (self.provider == "groq_free" or settings.llm.groq_api_key) and settings.llm.groq_api_key:
+                if self.provider == "groq_free":
+                    if not settings.llm.groq_api_key:
+                        logger.error("LLM_PROVIDER=groq_free but GROQ_API_KEY is not configured; skipping remote classification.")
+                        return []
                     raw_json_str = await self._call_groq(user_content)
-                else:
+                elif self.provider == "gemini_free":
+                    if settings.llm.gemini_api_key:
+                        raw_json_str = await self._call_gemini(user_content)
+                    if not raw_json_str and settings.llm.groq_api_key:
+                        logger.info("Gemini unavailable; falling back to configured Groq API.")
+                        raw_json_str = await self._call_groq(user_content)
+                    if not raw_json_str and not settings.llm.gemini_api_key and not settings.llm.groq_api_key:
+                        logger.error("No API key configured for the selected LLM providers; skipping remote classification.")
+                        return []
+                elif self.provider == "ollama":
                     raw_json_str = await self._call_ollama(user_content)
+                else:
+                    logger.error("Unsupported LLM_PROVIDER=%s; skipping remote classification.", self.provider)
+                    return []
 
                 if raw_json_str:
                     data = json.loads(raw_json_str)
@@ -148,7 +193,8 @@ Analyze the latest utterance for the 10 scam tactics. Respond strictly with JSON
                                 confidence=round(item.confidence, 2),
                                 evidence=item.evidence or turn.text,
                                 explanation=item.explanation or f"Detected {item.tactic}",
-                                t=turn.t1
+                                t=turn.t1,
+                                turn_id=turn.id,
                             ))
                     return events
             except Exception as e:

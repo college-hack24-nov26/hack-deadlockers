@@ -28,14 +28,21 @@ class RiskEngine:
         self.smoothed_scores.pop(call_id, None)
         self.last_update_times.pop(call_id, None)
 
-    def calculate_risk(self, call_id: str, events: List[TacticEvent], current_time: Optional[float] = None) -> RiskEvaluation:
+    def calculate_risk(
+        self,
+        call_id: str,
+        events: List[TacticEvent],
+        current_time: Optional[float] = None,
+        commit: bool = True,
+    ) -> RiskEvaluation:
         now = current_time or time.time()
         prev_score = self.smoothed_scores.get(call_id, 0.0)
 
         if not events:
             # Smoothly decay towards 0
             smoothed = max(0.0, prev_score * (1.0 - settings.risk.fall_alpha))
-            self.smoothed_scores[call_id] = round(smoothed, 1)
+            if commit:
+                self.smoothed_scores[call_id] = round(smoothed, 1)
             return RiskEvaluation(
                 score=round(smoothed, 1),
                 level=self._get_level(smoothed),
@@ -109,8 +116,9 @@ class RiskEngine:
             trend = "falling" if smoothed < prev_score - 1.0 else "stable"
 
         smoothed = round(min(100.0, max(0.0, smoothed)), 1)
-        self.smoothed_scores[call_id] = smoothed
-        self.last_update_times[call_id] = now
+        if commit:
+            self.smoothed_scores[call_id] = smoothed
+            self.last_update_times[call_id] = now
 
         level = self._get_level(smoothed)
         patterns_list = [p.pattern_name for p in seq_res.matched_patterns]

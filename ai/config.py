@@ -19,7 +19,7 @@ class VADConfig(BaseModel):
     max_speech_duration_s: float = 15.0  # Cap utterances at 15s
 
 class LLMConfig(BaseModel):
-    provider: str = Field(default=os.getenv("LLM_PROVIDER", "ollama"))  # ollama | gemini_free | groq_free
+    provider: str = Field(default=os.getenv("LLM_PROVIDER", "groq_free"))  # groq_free | gemini_free | ollama
     ollama_url: str = Field(default=os.getenv("OLLAMA_URL", "http://localhost:11434"))
     ollama_model: str = Field(default=os.getenv("OLLAMA_MODEL", "qwen2.5:7b-instruct"))
     gemini_api_key: str = Field(default=os.getenv("GEMINI_API_KEY", ""))
