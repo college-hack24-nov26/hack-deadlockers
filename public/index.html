@@ -218,7 +218,8 @@ async function startAIAnalysis() {
 
 function connectAIWebSocket() {
   if (!callId) return;
-  const wsUrl = `ws://${location.hostname || 'localhost'}:8000/ws/analyze/${encodeURIComponent(callId)}`;
+  const proto = (location.protocol === 'https:') ? 'wss:' : 'ws:';
+  const wsUrl = `${proto}//${location.host}/ws/analyze/${encodeURIComponent(callId)}`;
   try {
     aiWs = new WebSocket(wsUrl);
     aiWs.binaryType = 'arraybuffer';

@@ -174,38 +174,70 @@ Analyze the latest utterance for the 10 scam tactics. Respond strictly with JSON
             return None
 
     async def _call_gemini(self, user_content: str) -> Optional[str]:
-        # Free-tier Gemini REST API
+        # Free-tier Gemini REST API - uses gemini-2.0-flash for best free-tier performance
         key = settings.llm.gemini_api_key
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={key}"
-        payload = {
-            "system_instruction": {"parts": [{"text": SYSTEM_PROMPT}]},
-            "contents": [{"parts": [{"text": user_content}]}],
-            "generationConfig": {"response_mime_type": "application/json", "temperature": 0.1}
-        }
-        resp = await self.client.post(url, json=payload)
-        if resp.status_code == 200:
-            res_json = resp.json()
-            text = res_json["candidates"][0]["content"]["parts"][0]["text"]
-            return text
+        # Try gemini-2.0-flash first (better, still free), fall back to gemini-1.5-flash
+        for model in ["gemini-2.0-flash", "gemini-1.5-flash"]:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
+            payload = {
+                "system_instruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+                "contents": [{"parts": [{"text": user_content}]}],
+                "generationConfig": {
+                    "response_mime_type": "application/json",
+                    "temperature": 0.1,
+                    "maxOutputTokens": 1024
+                }
+            }
+            try:
+                resp = await self.client.post(url, json=payload, timeout=12.0)
+                if resp.status_code == 200:
+                    res_json = resp.json()
+                    text = res_json["candidates"][0]["content"]["parts"][0]["text"]
+                    logger.info(f"Gemini ({model}) classification success")
+                    return text
+                elif resp.status_code == 429:
+                    logger.warning(f"Gemini {model} rate-limited, trying fallback...")
+                    continue
+                else:
+                    logger.warning(f"Gemini {model} HTTP {resp.status_code}: {resp.text[:200]}")
+                    return None
+            except Exception as e:
+                logger.warning(f"Gemini {model} call failed: {e}")
+                continue
         return None
 
     async def _call_groq(self, user_content: str) -> Optional[str]:
-        # Free-tier Groq API
+        # Free-tier Groq API using best available model
         key = settings.llm.groq_api_key
         url = "https://api.groq.com/openai/v1/chat/completions"
         headers = {"Authorization": f"Bearer {key}"}
-        payload = {
-            "model": "llama-3.1-8b-instant",
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_content}
-            ],
-            "response_format": {"type": "json_object"},
-            "temperature": 0.1
-        }
-        resp = await self.client.post(url, json=payload, headers=headers)
-        if resp.status_code == 200:
-            res_json = resp.json()
-            return res_json["choices"][0]["message"]["content"]
+        # Try qwen3.8-27b (best available), fallback to openai/gpt-oss-20b
+        for model in ["qwen/qwen3.8-27b", "openai/gpt-oss-20b"]:
+            payload = {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": user_content}
+                ],
+                "response_format": {"type": "json_object"},
+                "temperature": 0.1,
+                "max_tokens": 1024
+            }
+            try:
+                resp = await self.client.post(url, json=payload, headers=headers, timeout=12.0)
+                if resp.status_code == 200:
+                    res_json = resp.json()
+                    content = res_json["choices"][0]["message"]["content"]
+                    logger.info(f"Groq ({model}) classification success")
+                    return content
+                elif resp.status_code == 429:
+                    logger.warning(f"Groq {model} rate-limited, trying fallback...")
+                    continue
+                else:
+                    logger.warning(f"Groq {model} HTTP {resp.status_code}: {resp.text[:200]}")
+                    return None
+            except Exception as e:
+                logger.warning(f"Groq {model} call failed: {e}")
+                continue
         return None
 
