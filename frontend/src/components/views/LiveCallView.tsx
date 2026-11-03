@@ -27,6 +27,7 @@ interface LiveCallViewProps {
   onEndCall: () => void;
   onToggleMute: () => void;
   onEnableAudio: () => void;
+  onEnableAnalysisAudio: () => void;
   onSimulate: (key: 'digitalArrest' | 'otpScam' | 'benignCall') => void;
   dialNumber: string;
   setDialNumber: (val: string) => void;
@@ -39,6 +40,7 @@ export const LiveCallView: React.FC<LiveCallViewProps> = ({
   onEndCall,
   onToggleMute,
   onEnableAudio,
+  onEnableAnalysisAudio,
   onSimulate,
   triggerToast
 }) => {
@@ -110,6 +112,19 @@ export const LiveCallView: React.FC<LiveCallViewProps> = ({
               AI risk analysis: {callState.analysisMessage}
             </p>
             <div className="flex flex-wrap items-center gap-2 text-[11px] mt-1">
+              <span className={callState.analysisAudioStatus === 'error' ? 'text-[#FF3B30]' : callState.analysisAudioStatus === 'blocked' ? 'text-amber-600' : 'text-[#6E6E73]'}>
+                AI audio feed: {callState.analysisAudioMessage}
+              </span>
+              {(callState.analysisAudioStatus === 'blocked' || callState.analysisAudioStatus === 'error') && (
+                <button
+                  onClick={onEnableAnalysisAudio}
+                  className="px-3 py-1 rounded-full bg-[#0071E3] text-white font-semibold hover:bg-[#0077ED]"
+                >
+                  Resume AI audio
+                </button>
+              )}
+            </div>
+            <div className="flex flex-wrap items-center gap-2 text-[11px] mt-1">
               <span className={callState.audioPlaybackStatus === 'error' ? 'text-[#FF3B30]' : 'text-[#6E6E73]'}>
                 Caller audio: {callState.audioPlaybackMessage}
               </span>
@@ -139,6 +154,20 @@ export const LiveCallView: React.FC<LiveCallViewProps> = ({
               <Volume2 className="w-3 h-3 text-[#0071E3]" /> Peer Audio RX
             </span>
             <span className="text-sm font-bold text-[#0071E3] mt-0.5 block font-mono">{formatAudioKB(callState.audioReceiveBytes)}</span>
+          </div>
+
+          <div className="text-right">
+            <span className="text-[10px] text-[#86868B] uppercase font-bold flex items-center justify-end gap-1">
+              <Activity className="w-3 h-3 text-[#0071E3]" /> AI Socket TX
+            </span>
+            <span className="text-sm font-bold text-[#0071E3] mt-0.5 block font-mono">{formatAudioKB(callState.analysisAudioBytesSent)}</span>
+          </div>
+
+          <div className="text-right">
+            <span className="text-[10px] text-[#86868B] uppercase font-bold flex items-center justify-end gap-1">
+              <Activity className="w-3 h-3 text-[#0071E3]" /> AI Engine RX
+            </span>
+            <span className="text-sm font-bold text-[#0071E3] mt-0.5 block font-mono">{formatAudioKB(callState.audioBytesSent)}</span>
           </div>
 
           <div className="text-right">

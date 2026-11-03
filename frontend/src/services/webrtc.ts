@@ -25,6 +25,11 @@ export interface WebRTCState {
   aiConnected: boolean;
   analysisStatus: 'idle' | 'connecting' | 'ready' | 'degraded' | 'error';
   analysisMessage: string;
+  analysisAudioStatus: 'idle' | 'waiting' | 'starting' | 'streaming' | 'blocked' | 'error';
+  analysisAudioMessage: string;
+  analysisAudioBytesSent: number;
+  analysisAudioFramesSent: number;
+  analysisAudioSignalFrames: number;
   audioPlaybackStatus: 'idle' | 'waiting' | 'playing' | 'blocked' | 'error';
   audioPlaybackMessage: string;
   turnConfigured: boolean;
@@ -41,6 +46,11 @@ export class WebRTCService {
   private remoteStream: MediaStream | null = null;
   private audioCtx: AudioContext | null = null;
   private workletNode: AudioWorkletNode | null = null;
+  private scriptProcessor: ScriptProcessorNode | null = null;
+  private remoteAudioSource: MediaStreamAudioSourceNode | null = null;
+  private analysisSilentGain: GainNode | null = null;
+  private analysisSourceConnected = false;
+  private pendingAudioFrames: ArrayBuffer[] = [];
   private remoteAudio: HTMLAudioElement | null = null;
   private pendingOffer: any = null;
   private pendingIce: RTCIceCandidateInit[] = [];
@@ -48,6 +58,7 @@ export class WebRTCService {
   private tickTimer: any = null;
   private animFrame: any = null;
   private audioStatsTimer: any = null;
+  private lastAudioMetricUpdateBytes = 0;
   private pendingAnalysisTurns: Array<{ type: 'transcript'; id: string; text: string; lang: string; t0: number; t1: number }> = [];
 
   public state: WebRTCState = {
@@ -71,6 +82,11 @@ export class WebRTCService {
     aiConnected: false,
     analysisStatus: 'idle',
     analysisMessage: 'AI analysis is not connected.',
+    analysisAudioStatus: 'idle',
+    analysisAudioMessage: 'Waiting for caller audio.',
+    analysisAudioBytesSent: 0,
+    analysisAudioFramesSent: 0,
+    analysisAudioSignalFrames: 0,
     audioPlaybackStatus: 'idle',
     audioPlaybackMessage: 'Caller audio will play here.',
     turnConfigured: false,
@@ -232,6 +248,21 @@ export class WebRTCService {
   }
 
   private async makePC(): Promise<boolean> {
+    // Create/resume Web Audio during the call-button gesture. Mobile browsers
+    // may block an AudioContext first created later from the remote ontrack event.
+    let audioContextResume: Promise<void> | null = null;
+    try {
+      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+      if (AudioContextClass) {
+        this.audioCtx = this.audioCtx || new AudioContextClass();
+        if (this.audioCtx.state === 'suspended') {
+          audioContextResume = this.audioCtx.resume().catch(() => undefined);
+        }
+      }
+    } catch (error) {
+      console.warn('Could not prepare Web Audio during call start:', error);
+    }
+
     try {
       this.localStream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
@@ -241,6 +272,7 @@ export class WebRTCService {
       this.notify();
       return false;
     }
+    if (audioContextResume) await audioContextResume;
 
     this.pc = new RTCPeerConnection({ iceServers: await this.loadIceServers() });
     this.localStream.getTracks().forEach(t => this.pc!.addTrack(t, this.localStream!));
@@ -517,7 +549,13 @@ export class WebRTCService {
     this.state.callState = 'idle';
     this.state.localLevel = 0;
     this.state.remoteLevel = 0;
+    this.state.audioBytesSent = 0;
     this.state.audioReceiveBytes = 0;
+    this.state.analysisAudioBytesSent = 0;
+    this.state.analysisAudioFramesSent = 0;
+    this.state.analysisAudioSignalFrames = 0;
+    this.state.analysisAudioStatus = 'idle';
+    this.state.analysisAudioMessage = 'Caller audio analysis is idle.';
     this.state.aiConnected = false;
     this.state.analysisStatus = 'idle';
     this.state.analysisMessage = 'AI analysis is disconnected.';
@@ -535,6 +573,11 @@ export class WebRTCService {
     this.state.riskTrend = 'stable';
     this.state.audioBytesSent = 0;
     this.state.audioReceiveBytes = 0;
+    this.state.analysisAudioBytesSent = 0;
+    this.state.analysisAudioFramesSent = 0;
+    this.state.analysisAudioSignalFrames = 0;
+    this.state.analysisAudioStatus = 'waiting';
+    this.state.analysisAudioMessage = 'Waiting for caller audio track…';
     this.state.audioPlaybackStatus = 'waiting';
     this.state.audioPlaybackMessage = 'Waiting for caller audio…';
     this.state.aiConnected = false;
@@ -574,6 +617,9 @@ export class WebRTCService {
         this.state.analysisMessage = 'AI socket connected; starting analysis…';
         this.notify();
         aiSocket.send(JSON.stringify({ type: 'start', call_id: callId, sample_rate: 16000 }));
+        while (this.pendingAudioFrames.length > 0) {
+          this.sendAnalysisAudioFrame(this.pendingAudioFrames.shift()!);
+        }
         while (this.pendingAnalysisTurns.length > 0) {
           aiSocket.send(JSON.stringify(this.pendingAnalysisTurns.shift()));
         }
@@ -593,6 +639,8 @@ export class WebRTCService {
         if (this.state.callState !== 'idle') {
           this.state.analysisStatus = 'error';
           this.state.analysisMessage = 'AI analysis disconnected; live risk scoring is paused.';
+          this.state.analysisAudioStatus = 'error';
+          this.state.analysisAudioMessage = 'AI audio connection closed.';
         }
         this.notify();
       };
@@ -601,6 +649,8 @@ export class WebRTCService {
         if (this.aiWs !== aiSocket) return;
         this.state.analysisStatus = 'error';
         this.state.analysisMessage = 'Could not reach the AI service; live risk scoring is unavailable.';
+        this.state.analysisAudioStatus = 'error';
+        this.state.analysisAudioMessage = 'Audio frames cannot reach the AI service.';
         this.notify();
       };
     } catch (err) {
@@ -612,11 +662,28 @@ export class WebRTCService {
     if (data.type === 'status') {
       if (data.audio_bytes !== undefined) {
         this.state.audioBytesSent = data.audio_bytes;
+        if (this.state.callState !== 'idle' && this.state.transcripts.length === 0) {
+          const utterances = Number(data.utterances || 0);
+          const transcripts = Number(data.transcripts || 0);
+          if (data.audio_bytes === 0) {
+            this.state.analysisAudioMessage = 'AI is ready; waiting for caller audio frames.';
+          } else if (this.state.analysisAudioFramesSent > 0 && this.state.analysisAudioSignalFrames === 0) {
+            this.state.analysisAudioMessage = `AI received ${(data.audio_bytes / 1024).toFixed(1)} KB, but the captured caller track is silent.`;
+          } else if (utterances === 0) {
+            this.state.analysisAudioMessage = `AI received audio (${this.state.analysisAudioSignalFrames}/${this.state.analysisAudioFramesSent} frames have sound); speech detection is waiting for a phrase pause.`;
+          } else if (transcripts === 0) {
+            this.state.analysisAudioMessage = `AI received audio and detected ${utterances} speech segment(s); waiting for transcription.`;
+          } else {
+            this.state.analysisAudioMessage = `AI received audio · ${utterances} speech segment(s) · ${transcripts} transcript(s).`;
+          }
+        }
       }
       if (data.state === 'error') this.state.analysisStatus = 'error';
       else if (data.state === 'degraded') this.state.analysisStatus = 'degraded';
       else if (data.state === 'listening') this.state.analysisStatus = 'ready';
-      if (data.message || data.warning) {
+      if (data.llm_configured === false) {
+        this.state.analysisMessage = `${data.llm_provider || 'Configured AI'} API key is missing; local tactic and risk scoring remain active.`;
+      } else if (data.message || data.warning) {
         this.state.analysisMessage = data.message || data.warning;
       } else if (data.llm_provider) {
         this.state.analysisMessage = `Live analysis ready · ${data.llm_provider} classifier with local risk engine`;
@@ -636,6 +703,7 @@ export class WebRTCService {
       };
       if (existingIndex >= 0) this.state.transcripts[existingIndex] = turn;
       else this.state.transcripts.push(turn);
+      this.state.analysisAudioMessage = 'Speech transcribed; scam tactic classification and risk scoring are running.';
     } else if (data.type === 'tactics') {
       const items = data.items || [];
       const turnId = data.turn_id;
@@ -646,6 +714,7 @@ export class WebRTCService {
         const transcript = this.state.transcripts.find(turn => turn.id === turnId);
         if (transcript) transcript.tactics = items;
       }
+      this.state.analysisAudioMessage = 'Latest speech analyzed; live risk score updated.';
     } else if (data.type === 'risk') {
       const wasCritical = this.state.riskLevel === 'Critical';
       this.state.riskScore = Math.round(data.score || 0);
@@ -670,39 +739,147 @@ export class WebRTCService {
   }
 
   private async startAudioWorklet() {
+    if (!this.remoteStream) {
+      this.state.analysisAudioStatus = 'waiting';
+      this.state.analysisAudioMessage = 'Waiting for the remote caller audio track.';
+      this.notify();
+      return;
+    }
+
+    this.state.analysisAudioStatus = 'starting';
+    this.state.analysisAudioMessage = 'Starting caller audio capture for AI analysis…';
+    this.notify();
+
     try {
-      this.audioCtx = this.audioCtx || new (window.AudioContext || (window as any).webkitAudioContext)();
+      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioContextClass) throw new Error('This browser does not support Web Audio');
+      this.audioCtx = this.audioCtx || new AudioContextClass();
       if (this.audioCtx.state === 'suspended') {
         await this.audioCtx.resume();
       }
-
-      await this.audioCtx.audioWorklet.addModule('/pcm-worklet.js');
-
-      if (!this.workletNode) {
-        this.workletNode = new AudioWorkletNode(this.audioCtx, 'pcm-worklet-processor');
-        this.workletNode.port.onmessage = (e) => {
-          if (this.aiWs && this.aiWs.readyState === WebSocket.OPEN) {
-            this.aiWs.send(e.data);
-          }
-        };
-
-        const silentGain = this.audioCtx.createGain();
-        silentGain.gain.value = 0.0;
-        this.workletNode.connect(silentGain);
-        silentGain.connect(this.audioCtx.destination);
+      if (this.audioCtx.state !== 'running') {
+        this.state.analysisAudioStatus = 'blocked';
+        this.state.analysisAudioMessage = 'Mobile browser paused audio analysis. Tap Resume AI audio below.';
+        this.notify();
+        return;
       }
 
-      if (this.remoteStream) {
-        const remoteSrc = this.audioCtx.createMediaStreamSource(this.remoteStream);
-        remoteSrc.connect(this.workletNode);
+      this.remoteAudioSource = this.remoteAudioSource || this.audioCtx.createMediaStreamSource(this.remoteStream);
+      if (!this.analysisSilentGain) {
+        this.analysisSilentGain = this.audioCtx.createGain();
+        this.analysisSilentGain.gain.value = 0;
+        this.analysisSilentGain.connect(this.audioCtx.destination);
       }
+
+      try {
+        if (!this.audioCtx.audioWorklet || typeof AudioWorkletNode === 'undefined') {
+          throw new Error('AudioWorklet is unavailable in this browser');
+        }
+        await this.audioCtx.audioWorklet.addModule('/pcm-worklet.js');
+
+        if (!this.workletNode) {
+          this.workletNode = new AudioWorkletNode(this.audioCtx, 'pcm-worklet-processor');
+          this.workletNode.port.onmessage = (e) => this.sendAnalysisAudioFrame(e.data as ArrayBuffer);
+        }
+        if (!this.analysisSourceConnected) {
+          this.remoteAudioSource.connect(this.workletNode);
+          this.workletNode.connect(this.analysisSilentGain);
+          this.analysisSourceConnected = true;
+        }
+        this.state.analysisAudioStatus = 'streaming';
+        this.state.analysisAudioMessage = 'Caller audio is being streamed to AI analysis.';
+      } catch (workletError) {
+        console.warn('AudioWorklet unavailable; using mobile-compatible audio capture fallback:', workletError);
+        this.connectScriptProcessorFallback();
+        this.state.analysisAudioStatus = 'streaming';
+        this.state.analysisAudioMessage = 'Caller audio is being streamed to AI analysis using compatibility capture.';
+      }
+      this.notify();
     } catch (err) {
-      console.warn('AudioWorklet setup error:', err);
+      console.warn('AI audio capture setup failed:', err);
+      this.state.analysisAudioStatus = 'error';
+      this.state.analysisAudioMessage = 'Could not capture caller audio for AI analysis. Check browser audio permissions and reload.';
+      this.state.analysisStatus = 'degraded';
+      this.state.analysisMessage = 'Call audio works, but the browser audio-analysis input failed.';
+      this.notify();
     }
+  }
+
+  private connectScriptProcessorFallback() {
+    if (!this.audioCtx || !this.remoteAudioSource || !this.analysisSilentGain) {
+      throw new Error('Audio capture graph is not ready');
+    }
+    if (!this.scriptProcessor) {
+      const frameSamples = 4000;
+      const pcmFrame = new Int16Array(frameSamples);
+      let pcmFrameIndex = 0;
+      let samplePosition = 0;
+      const inputSampleRate = this.audioCtx.sampleRate;
+      const resampleRatio = inputSampleRate / 16000;
+      this.scriptProcessor = this.audioCtx.createScriptProcessor(4096, 1, 1);
+      this.scriptProcessor.onaudioprocess = (event) => {
+        const input = event.inputBuffer.getChannelData(0);
+        while (samplePosition < input.length) {
+          const index = Math.floor(samplePosition);
+          const nextIndex = Math.min(index + 1, input.length - 1);
+          const fraction = samplePosition - index;
+          const sample = input[index] + fraction * (input[nextIndex] - input[index]);
+          const clamped = Math.max(-1, Math.min(1, sample));
+          pcmFrame[pcmFrameIndex++] = clamped < 0
+            ? Math.round(clamped * 32768)
+            : Math.round(clamped * 32767);
+          if (pcmFrameIndex === frameSamples) {
+            this.sendAnalysisAudioFrame(new Int16Array(pcmFrame).buffer);
+            pcmFrameIndex = 0;
+          }
+          samplePosition += resampleRatio;
+        }
+        samplePosition -= input.length;
+        for (let channel = 0; channel < event.outputBuffer.numberOfChannels; channel++) {
+          event.outputBuffer.getChannelData(channel).fill(0);
+        }
+      };
+    }
+    if (!this.analysisSourceConnected) {
+      this.remoteAudioSource.connect(this.scriptProcessor);
+      this.scriptProcessor.connect(this.analysisSilentGain);
+      this.analysisSourceConnected = true;
+    }
+  }
+
+  private sendAnalysisAudioFrame(frame: ArrayBuffer) {
+    if (this.aiWs?.readyState === WebSocket.OPEN) {
+      this.aiWs.send(frame);
+      this.state.analysisAudioBytesSent += frame.byteLength;
+      this.state.analysisAudioFramesSent += 1;
+      const samples = new Int16Array(frame);
+      let squareSum = 0;
+      for (let i = 0; i < samples.length; i += 4) {
+        const normalized = samples[i] / 32768;
+        squareSum += normalized * normalized;
+      }
+      const sampledCount = Math.ceil(samples.length / 4);
+      const rms = sampledCount ? Math.sqrt(squareSum / sampledCount) : 0;
+      if (rms >= 0.008) this.state.analysisAudioSignalFrames += 1;
+      this.state.analysisAudioStatus = 'streaming';
+      if (this.state.analysisAudioBytesSent - this.lastAudioMetricUpdateBytes >= 32000) {
+        this.lastAudioMetricUpdateBytes = this.state.analysisAudioBytesSent;
+        this.notify();
+      }
+      return;
+    }
+
+    // Keep a short startup buffer instead of dropping caller audio while the
+    // AI WebSocket is still opening.
+    if (this.pendingAudioFrames.length >= 20) this.pendingAudioFrames.shift();
+    this.pendingAudioFrames.push(frame);
+    this.state.analysisAudioStatus = 'starting';
+    this.state.analysisAudioMessage = 'Buffering caller audio while the AI connection opens…';
   }
 
   private stopAudioWorklet() {
     this.pendingAnalysisTurns = [];
+    this.pendingAudioFrames = [];
     if (this.aiWs) {
       try {
         if (this.aiWs.readyState === WebSocket.OPEN) {
@@ -714,7 +891,38 @@ export class WebRTCService {
     }
     if (this.workletNode) {
       try { this.workletNode.disconnect(); } catch(e) {}
+      this.workletNode.port.onmessage = null;
       this.workletNode = null;
+    }
+    if (this.scriptProcessor) {
+      this.scriptProcessor.onaudioprocess = null;
+      try { this.scriptProcessor.disconnect(); } catch(e) {}
+      this.scriptProcessor = null;
+    }
+    if (this.remoteAudioSource) {
+      try { this.remoteAudioSource.disconnect(); } catch(e) {}
+      this.remoteAudioSource = null;
+    }
+    if (this.analysisSilentGain) {
+      try { this.analysisSilentGain.disconnect(); } catch(e) {}
+      this.analysisSilentGain = null;
+    }
+    this.analysisSourceConnected = false;
+    this.lastAudioMetricUpdateBytes = 0;
+  }
+
+  public async enableAnalysisAudio() {
+    if (!this.audioCtx) {
+      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+      if (AudioContextClass) this.audioCtx = new AudioContextClass();
+    }
+    try {
+      if (this.audioCtx?.state === 'suspended') await this.audioCtx.resume();
+      await this.startAudioWorklet();
+    } catch (error) {
+      this.state.analysisAudioStatus = 'blocked';
+      this.state.analysisAudioMessage = 'Audio is still paused. Check browser audio permissions and tap Resume AI audio again.';
+      this.notify();
     }
   }
 

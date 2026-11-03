@@ -28,6 +28,7 @@ export function App() {
     rejectCall,
     toggleMute,
     enableAudioPlayback,
+    enableAnalysisAudio,
     historicCalls
   } = useScamChain();
 
@@ -80,6 +81,7 @@ export function App() {
               onEndCall={handleEndCall}
               onToggleMute={toggleMute}
               onEnableAudio={enableAudioPlayback}
+              onEnableAnalysisAudio={enableAnalysisAudio}
               onSimulate={handleSimulate}
               dialNumber={dialNumber}
               setDialNumber={setDialNumber}

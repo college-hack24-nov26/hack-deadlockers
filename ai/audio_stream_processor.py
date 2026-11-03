@@ -72,7 +72,7 @@ class SileroVAD:
 class AudioStreamProcessor:
     """
     Buffers streaming 16kHz Int16 audio, runs VAD,
-    and yields committed Utterances upon ~600ms silence or 15s max duration.
+    and yields committed utterances after the configured silence or duration limit.
     """
     def __init__(self, sample_rate: int = 16000, silence_ms: int = 600, max_duration_s: float = 15.0, min_speech_ms: int = 300):
         self.sample_rate = sample_rate
@@ -134,8 +134,8 @@ class AudioStreamProcessor:
             self.total_samples_received += self.frame_size
 
             # Check commit conditions:
-            # 1. Trailing silence >= silence_samples_threshold (~600ms)
-            # 2. Maximum speech duration capped at ~15s
+            # 1. Trailing silence reaches the configured commit threshold.
+            # 2. Maximum speech duration reaches the configured cap.
             if self.in_speech:
                 current_speech_samples = len(self.speech_chunks) * self.frame_size
                 is_silence_timeout = self.trailing_silence_samples >= self.silence_samples_threshold

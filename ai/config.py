@@ -15,8 +15,8 @@ class VADConfig(BaseModel):
     sample_rate: int = 16000
     threshold: float = 0.5
     min_speech_duration_ms: int = 250
-    min_silence_duration_ms: int = 600  # Commit utterance after ~600ms silence
-    max_speech_duration_s: float = 15.0  # Cap utterances at 15s
+    min_silence_duration_ms: int = 450  # Commit after a short natural pause for lower live-analysis latency
+    max_speech_duration_s: float = 6.0  # Bound latency during continuous speech
 
 class LLMConfig(BaseModel):
     provider: str = Field(default=os.getenv("LLM_PROVIDER", "groq_free"))  # groq_free | gemini_free | ollama

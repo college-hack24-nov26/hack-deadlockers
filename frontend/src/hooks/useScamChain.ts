@@ -82,6 +82,7 @@ export function useScamChain() {
     rejectCall: () => webrtcService.rejectCall(),
     toggleMute: () => webrtcService.toggleMute(),
     enableAudioPlayback: () => webrtcService.enableAudioPlayback(),
+    enableAnalysisAudio: () => webrtcService.enableAnalysisAudio(),
     historicCalls: HISTORIC_CALLS
   };
 }

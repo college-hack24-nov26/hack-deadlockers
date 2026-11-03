@@ -54,6 +54,8 @@ class ActiveCallSession:
         self.call_id = call_id
         self.websocket = websocket
         self.audio_bytes = 0
+        self.utterance_count = 0
+        self.transcript_count = 0
         self.started_at = time.time()
         self.last_status_sent = 0
         self.last_sent_risk_score: Optional[float] = None
@@ -62,7 +64,8 @@ class ActiveCallSession:
         self.processor = AudioStreamProcessor(
             sample_rate=settings.vad.sample_rate,
             silence_ms=settings.vad.min_silence_duration_ms,
-            max_duration_s=settings.vad.max_speech_duration_s
+            max_duration_s=settings.vad.max_speech_duration_s,
+            min_speech_ms=settings.vad.min_speech_duration_ms,
         )
         self.worker_task: Optional[asyncio.Task] = None
         self.analysis_tasks: set[asyncio.Task] = set()
@@ -77,6 +80,13 @@ class ActiveCallSession:
             logger.warning(f"Failed to send JSON to {self.call_id}: {e}")
 
 sessions: Dict[str, ActiveCallSession] = {}
+
+def llm_is_configured() -> bool:
+    if settings.llm.provider == "groq_free":
+        return bool(settings.llm.groq_api_key)
+    if settings.llm.provider == "gemini_free":
+        return bool(settings.llm.gemini_api_key or settings.llm.groq_api_key)
+    return settings.llm.provider == "ollama"
 
 @app.get("/health")
 async def health_check():
@@ -118,7 +128,11 @@ async def process_call_audio(session: ActiveCallSession):
                         "type": "status",
                         "state": "listening" if stt_engine and stt_engine.model else "degraded",
                         "audio_bytes": session.audio_bytes,
+                        "utterances": session.utterance_count,
+                        "transcripts": session.transcript_count,
                         "queue_depth": session.audio_queue.qsize(),
+                        "llm_provider": settings.llm.provider,
+                        "llm_configured": llm_is_configured(),
                     })
                 continue
 
@@ -129,6 +143,7 @@ async def process_call_audio(session: ActiveCallSession):
             committed_utterances = session.processor.feed(frame)
 
             for utt in committed_utterances:
+                session.utterance_count += 1
                 logger.info(f"[{session.call_id}] Speech committed: {utt.duration}s! Transcribing with faster-whisper...")
                 # Transcribe offloaded to thread executor
                 t_vad_stt_start = time.time()
@@ -173,7 +188,11 @@ async def process_call_audio(session: ActiveCallSession):
                     "type": "status",
                     "state": "listening" if stt_engine and stt_engine.model else "degraded",
                     "audio_bytes": session.audio_bytes,
+                    "utterances": session.utterance_count,
+                    "transcripts": session.transcript_count,
                     "queue_depth": session.audio_queue.qsize(),
+                    "llm_provider": settings.llm.provider,
+                    "llm_configured": llm_is_configured(),
                 })
 
     except asyncio.CancelledError:
@@ -184,6 +203,7 @@ async def process_call_audio(session: ActiveCallSession):
 
 async def analyze_transcript(session: ActiveCallSession, turn: Turn):
     """Score each transcript immediately, then refine it with the configured AI model."""
+    session.transcript_count += 1
     await session.send_json({
         "type": "transcript",
         "id": turn.id,
@@ -302,17 +322,23 @@ async def analyze_call(websocket: WebSocket, call_id: str):
     sessions[call_id] = session
     session.worker_task = asyncio.create_task(process_call_audio(session))
 
+    llm_configured = llm_is_configured()
+    stt_ready = bool(stt_engine and stt_engine.model)
+    if not stt_ready:
+        initial_message = "AI connected, but speech recognition is unavailable. Audio risk scoring cannot start until the STT model loads."
+    elif not llm_configured:
+        initial_message = "Groq API key is missing; local tactic and risk scoring will continue."
+    else:
+        initial_message = "AI analysis connected; live speech scoring is ready."
+
     await session.send_json({
         "type": "status",
-        "state": "listening" if stt_engine and stt_engine.model else "degraded",
+        "state": "listening" if stt_ready else "degraded",
         "audio_bytes": 0,
         "stt_ready": bool(stt_engine and stt_engine.model),
         "llm_provider": settings.llm.provider,
-        "message": (
-            "AI analysis connected; live speech scoring is ready."
-            if stt_engine and stt_engine.model
-            else "AI connected, but speech recognition is unavailable. Audio risk scoring cannot start until the STT model loads."
-        ),
+        "llm_configured": llm_configured,
+        "message": initial_message,
     })
 
     try:
@@ -330,6 +356,10 @@ async def analyze_call(websocket: WebSocket, call_id: str):
                         "type": "status",
                         "state": "degraded",
                         "audio_bytes": session.audio_bytes,
+                        "utterances": session.utterance_count,
+                        "transcripts": session.transcript_count,
+                        "llm_provider": settings.llm.provider,
+                        "llm_configured": llm_is_configured(),
                         "warning": "Queue full, dropping oldest frame"
                     })
                 session.audio_queue.put_nowait(raw_bytes)
