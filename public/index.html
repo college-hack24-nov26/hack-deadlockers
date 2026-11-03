@@ -171,7 +171,7 @@ async function makePC(){
   pc.onicecandidate = e => e.candidate && send({type:'ice', to:peerId, candidate:e.candidate});
   pc.onicecandidateerror = e => console.warn('[WebRTC] ICE candidate error:', e.errorCode, e.errorText, e.url);
   pc.ontrack = e => {
-    remoteStream = e.streams[0];
+    remoteStream = e.streams[0] || new MediaStream([e.track]);
     $('remoteAudio').srcObject = remoteStream;
     try { $('remoteAudio').play(); } catch(err) {}
     tapStream(remoteStream,'remote',$('lvlRemote'));
@@ -240,7 +240,8 @@ async function diagnoseIceFailure(activePc) {
 }
 async function startCall(){
   peerId = $('toId').value.trim(); if(!peerId||peerId===myId) return;
-  showCall('Calling…'); try { await makePC(); } catch(e){ status(mediaAccessError(e)); return endCall(false); }
+  showCall('Calling…'); await activateAudioContext();
+  try { await makePC(); } catch(e){ status(mediaAccessError(e)); return endCall(false); }
   const offer = await pc.createOffer(); await pc.setLocalDescription(offer);
   send({type:'offer', to:peerId, sdp:pc.localDescription});
   ringTimer = setTimeout(()=>{ status('No answer'); endCall(true); }, 45000);
@@ -248,6 +249,7 @@ async function startCall(){
 function showIncoming(){ showCall('Incoming call…'); $('acceptBtn').classList.remove('hidden'); }
 async function acceptCall(){
   $('acceptBtn').classList.add('hidden'); status('Connecting…');
+  await activateAudioContext();
   try { await makePC(); } catch(e){ status(mediaAccessError(e)); return endCall(true); }
   await pc.setRemoteDescription(pendingOffer.sdp); flushIce(); pendingOffer=null;
   const ans = await pc.createAnswer(); await pc.setLocalDescription(ans);
@@ -286,6 +288,18 @@ function mediaAccessError(error) {
   return 'Could not start the microphone. Check browser permission and try again.';
 }
 
+async function activateAudioContext() {
+  try {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) throw new Error('Web Audio is unavailable in this browser.');
+    audioCtx = audioCtx || new AudioContextClass();
+    if (audioCtx.state !== 'running') await audioCtx.resume();
+    console.info('[Audio] Context state:', audioCtx.state, 'sample rate:', audioCtx.sampleRate);
+  } catch (error) {
+    console.warn('[Audio] Could not activate audio context from the call action:', error);
+  }
+}
+
 /* ===== AI SCAM SHIELD INTEGRATION ===== */
 let aiWs = null, aiWorkletNode = null, aiAudioSource = null, aiReconnectTimer = null, aiReconnectDelay = 2000, callId = null;
 
@@ -304,7 +318,7 @@ function updateShieldStatus(state, msg) {
 async function startAIAnalysis() {
   callId = [myId, peerId].sort().join('-');
   $('shieldPanel').classList.remove('hidden');
-  updateShieldStatus('connecting', 'Connecting…');
+  updateShieldStatus('connecting', 'Connecting to caller audio…');
   connectAIWebSocket();
   setupAudioWorklet();
 }
@@ -319,8 +333,9 @@ function connectAIWebSocket() {
 
     aiWs.onopen = () => {
       aiReconnectDelay = 2000;
-      updateShieldStatus('listening', 'Listening');
+      updateShieldStatus('listening', 'Listening to caller');
       aiWs.send(JSON.stringify({ type: 'start', call_id: callId, sample_rate: 16000 }));
+      setupAudioWorklet();
     };
 
     aiWs.onmessage = e => {
@@ -360,10 +375,11 @@ function scheduleAIRetry() {
   }, aiReconnectDelay);
 }
 
-let aiRemoteSource = null, aiLocalSource = null, aiSilentSink = null;
+let aiRemoteSource = null, aiSilentSink = null, aiWorkletSetup = null;
 
 async function setupAudioWorklet() {
-  try {
+  if (aiWorkletSetup) return aiWorkletSetup;
+  aiWorkletSetup = (async () => {
     audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
     if (audioCtx.state === 'suspended') {
       await audioCtx.resume();
@@ -376,6 +392,10 @@ async function setupAudioWorklet() {
         if (aiWs && aiWs.readyState === WebSocket.OPEN) {
           aiWs.send(e.data); // binary 250ms Int16 PCM frame
         }
+      };
+      aiWorkletNode.onprocessorerror = event => {
+        console.error('[Audio] PCM worklet processor failed:', event);
+        updateShieldStatus('error', 'Audio capture failed');
       };
       // Keep Web Audio clock active on mobile browsers (Android Chrome)
       aiSilentSink = audioCtx.createGain();
@@ -390,19 +410,24 @@ async function setupAudioWorklet() {
       aiRemoteSource.connect(aiWorkletNode);
     }
 
-    // Also connect local mic so whenever either party speaks, the AI analyzes speech in real time
-    if (localStream && !aiLocalSource) {
-      aiLocalSource = audioCtx.createMediaStreamSource(localStream);
-      aiLocalSource.connect(aiWorkletNode);
-    }
+    console.info('[Audio] Analysis graph ready:', {
+      contextState: audioCtx.state,
+      remoteTracks: remoteStream?.getAudioTracks().map(t => ({ state: t.readyState, muted: t.muted }))
+    });
+  })();
+  try {
+    await aiWorkletSetup;
   } catch (err) {
     console.warn('AudioWorklet setup error:', err);
+    updateShieldStatus('error', 'Audio capture unavailable');
+  } finally {
+    aiWorkletSetup = null;
   }
 }
 
 function handleAIMessage(m) {
   if (m.type === 'status') {
-    updateShieldStatus(m.state, m.state === 'listening' ? 'Listening' : (m.state === 'degraded' ? 'Degraded' : m.state));
+    updateShieldStatus(m.state, m.state === 'listening' ? 'Listening to caller' : (m.state === 'degraded' ? 'Degraded' : m.state));
     if (m.audio_bytes !== undefined) {
       const kb = (m.audio_bytes / 1024).toFixed(1);
       $('shieldBytes').textContent = kb + ' KB';
@@ -535,10 +560,6 @@ function stopAIAnalysis() {
   if (aiRemoteSource) {
     try { aiRemoteSource.disconnect(); } catch(e) {}
     aiRemoteSource = null;
-  }
-  if (aiLocalSource) {
-    try { aiLocalSource.disconnect(); } catch(e) {}
-    aiLocalSource = null;
   }
   if (aiSilentSink) {
     try { aiSilentSink.disconnect(); } catch(e) {}
